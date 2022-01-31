@@ -10,6 +10,11 @@ pub fn child_main(filename: &str, args: &Vec<&str>) {
         args_cstr.push(convert_string_ref_to_cstr_ref(arg));
     }
 
+    // argsが空の場合は空文字列を入れる
+    if args.is_empty() {
+        args_cstr.push(convert_string_ref_to_cstr_ref(""));
+    }
+
     let _ = execvp(&cstr, &args_cstr);
     println!("execvp error!");
 }
