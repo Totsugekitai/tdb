@@ -1,8 +1,10 @@
-use crate::syscall::{
-    get_regs, get_syscall_info, init_syscall_stack, pop_syscall_stack, push_syscall_stack,
-    top_syscall_number_in_syscall_stack,
+use crate::{
+    dwarf::get_debug_info,
+    syscall::{
+        get_regs, get_syscall_info, init_syscall_stack, pop_syscall_stack, push_syscall_stack,
+        top_syscall_number_in_syscall_stack,
+    },
 };
-// use crate::terminal::{self, TuiMainExitStatus};
 use nix::{
     libc::{PTRACE_O_TRACEEXEC, PTRACE_O_TRACESYSGOOD},
     sys::{
@@ -22,14 +24,13 @@ use std::{
     process::exit,
 };
 
-pub fn parent_main(child: Pid) {
-    init_syscall_stack();
-
+pub fn debugger_main(child: Pid, filename: &str) {
     if let Err(e) = ptrace::attach(child) {
         panic!("ptrace::attach failed, errno: {e}");
     }
 
-    // let mut terminal = terminal::setup().unwrap();
+    get_debug_info(filename);
+    init_syscall_stack();
 
     loop {
         let wait_options =
@@ -56,17 +57,14 @@ pub fn parent_main(child: Pid) {
             StillAlive => still_alive(),
             Stopped(pid, signal) => stopped(pid, signal),
         }
-
-        // if let Ok(s) = terminal::tui_main(&mut terminal) {
-        //     match s {
-        //         TuiMainExitStatus::PressCtrlC => break,
-        //     }
-        // }
     }
 }
 
 fn continued(pid: Pid) {
     println!("continued: PID: {pid}");
+    if let Err(e) = ptrace::cont(pid, None) {
+        panic!("ptrace::cont failed: errno = {:?}", e);
+    }
 }
 
 fn exited(pid: Pid, exit_code: i32) {
@@ -76,8 +74,8 @@ fn exited(pid: Pid, exit_code: i32) {
 
 fn ptrace_event(pid: Pid, signal: Signal, event: i32) {
     println!("evented: PID: {pid}, Signal: {:?}, Event: {event}", signal);
-    if let Err(e) = ptrace::syscall(pid, signal) {
-        panic!("ptrace::syscall failed: errno = {:?}", e);
+    if let Err(e) = ptrace::cont(pid, signal) {
+        panic!("ptrace::cont failed: errno = {:?}", e);
     }
 }
 
@@ -95,10 +93,10 @@ fn ptrace_syscall(pid: Pid) {
         }
         // syscallの出口だった場合
         else {
-            if let None = pop_syscall_stack() {
-                panic!("syscall count failed");
+            if let Some(s) = pop_syscall_stack() {
+                println!("syscall exit : {}", s.name);
             } else {
-                println!("syscall exit");
+                panic!("syscall count failed");
             }
         }
     } else {
@@ -109,14 +107,14 @@ fn ptrace_syscall(pid: Pid) {
         push_syscall_stack(syscall_info);
     }
 
-    if let Err(e) = ptrace::syscall(pid, None) {
+    if let Err(e) = ptrace::cont(pid, None) {
         panic!("ptrace::syscall failed: errno = {:?}", e);
     }
 }
 
 fn signaled(pid: Pid, signal: Signal, _core_dump: bool) {
     println!("signaled: PID: {pid}, Signal: {:?}", signal);
-    if let Err(e) = ptrace::syscall(pid, signal) {
+    if let Err(e) = ptrace::cont(pid, signal) {
         panic!("ptrace::syscall failed: errno = {e}");
     }
 }
@@ -127,11 +125,12 @@ fn still_alive() {
 
 fn stopped(pid: Pid, signal: Signal) {
     println!("stopped: PID: {pid}, Signal: {:?}", signal);
-    if let Err(e) = ptrace::syscall(pid, signal) {
+    if let Err(e) = ptrace::cont(pid, signal) {
         panic!("ptrace::syscall failed: errno = {e}");
     }
 }
 
+#[allow(unused)]
 fn intext() {
     let stdin = io::stdin();
     let mut handle = stdin.lock();
