@@ -2,6 +2,7 @@ use crate::syscall::{
     get_regs, get_syscall_info, init_syscall_stack, pop_syscall_stack, push_syscall_stack,
     top_syscall_number_in_syscall_stack,
 };
+// use crate::terminal::{self, TuiMainExitStatus};
 use nix::{
     libc::{PTRACE_O_TRACEEXEC, PTRACE_O_TRACESYSGOOD},
     sys::{
@@ -16,7 +17,10 @@ use nix::{
     },
     unistd::Pid,
 };
-use std::process::exit;
+use std::{
+    io::{self, BufRead},
+    process::exit,
+};
 
 pub fn parent_main(child: Pid) {
     init_syscall_stack();
@@ -24,6 +28,8 @@ pub fn parent_main(child: Pid) {
     if let Err(e) = ptrace::attach(child) {
         panic!("ptrace::attach failed, errno: {e}");
     }
+
+    // let mut terminal = terminal::setup().unwrap();
 
     loop {
         let wait_options =
@@ -50,6 +56,12 @@ pub fn parent_main(child: Pid) {
             StillAlive => still_alive(),
             Stopped(pid, signal) => stopped(pid, signal),
         }
+
+        // if let Ok(s) = terminal::tui_main(&mut terminal) {
+        //     match s {
+        //         TuiMainExitStatus::PressCtrlC => break,
+        //     }
+        // }
     }
 }
 
@@ -118,4 +130,14 @@ fn stopped(pid: Pid, signal: Signal) {
     if let Err(e) = ptrace::syscall(pid, signal) {
         panic!("ptrace::syscall failed: errno = {e}");
     }
+}
+
+fn intext() {
+    let stdin = io::stdin();
+    let mut handle = stdin.lock();
+
+    let mut buf = String::new();
+    handle.read_line(&mut buf).unwrap();
+
+    println!("{buf}");
 }

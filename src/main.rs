@@ -2,6 +2,7 @@ mod child;
 mod command_line;
 mod parent;
 mod syscall;
+// mod terminal;
 
 use child::child_main;
 use clap::StructOpt;
