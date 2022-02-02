@@ -5,6 +5,18 @@ use std::{
     fs::File,
 };
 
+// #[derive(Debug)]
+// pub struct ExecSegmentInfo {
+//     base: usize,
+//     len: usize,
+// }
+
+// #[derive(Debug)]
+// pub struct DataSegmentInfo {
+//     base: usize,
+//     len: usize,
+// }
+
 pub fn get_debug_info(filename: &str) {
     let file = File::open(filename).unwrap();
     let mmap = unsafe { memmap::Mmap::map(&file).unwrap() };
@@ -14,11 +26,8 @@ pub fn get_debug_info(filename: &str) {
     } else {
         gimli::RunTimeEndian::Big
     };
-    let dwarf_cow = if let Ok(dwarf_cow) = get_dwarf_cow(&object) {
-        dwarf_cow
-    } else {
-        panic!("load debug info");
-    };
+
+    let dwarf_cow = get_dwarf_cow(&object).unwrap();
     let dwarf = get_dwarf(&dwarf_cow, endian);
 
     let mut iter = dwarf.units();

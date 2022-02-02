@@ -1,6 +1,9 @@
 use nix::{sys::ptrace::traceme, unistd::execvp};
 use std::ffi::{CStr, CString};
 
+#[derive(Debug)]
+pub struct DebuggeeInfo {}
+
 pub fn debuggee_main(filename: &str, args: &Vec<&str>) {
     let _ = traceme();
     let cstr = convert_string_ref_to_cstr_ref(filename);

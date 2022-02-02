@@ -21,7 +21,7 @@ use nix::{
     },
     unistd::Pid,
 };
-use proc_maps::get_process_maps;
+use proc_maps::{get_process_maps, MapRange};
 use std::{
     io::{self, BufRead},
     process::exit,
@@ -35,7 +35,24 @@ pub fn debugger_main(child: Pid, filename: &str) {
     get_debug_info(filename);
     init_syscall_stack();
 
-    test_readv(child);
+    let (base, len) = if let Ok(m) = get_child_process_memory_info(child) {
+        (m.start(), m.size())
+    } else {
+        panic!("get_child_process_memory_info error");
+    };
+
+    let mut buf = vec![0; len];
+    if let Ok(num_bytes) = test_process_vm_readv(child, base, len, &mut buf) {
+        if num_bytes != 0 {
+            println!("read {num_bytes} byte");
+            for (i, b) in buf.iter().enumerate() {
+                println!("0x{:x}: 0x{:02x}", base + i, b);
+                if i > 100 {
+                    break;
+                }
+            }
+        }
+    }
 
     loop {
         let wait_options =
@@ -146,8 +163,8 @@ fn intext() {
     println!("{buf}");
 }
 
-fn test_readv(pid: Pid) {
-    let maps = get_process_maps(pid.as_raw()).unwrap();
+fn get_child_process_memory_info(child: Pid) -> Result<MapRange, io::ErrorKind> {
+    let maps = get_process_maps(child.as_raw()).unwrap();
     for map in maps {
         if map.is_exec() {
             let path_filename = map
@@ -158,21 +175,20 @@ fn test_readv(pid: Pid) {
                 .to_str()
                 .unwrap();
             if path_filename == DEBUGGER_NAME {
-                println!(
-                    "exec maps - pid: {pid}, name: {}, start: 0x{:x}",
-                    map.filename().unwrap().as_os_str().to_str().unwrap(),
-                    map.start()
-                );
-                let addr = map.start();
-                let mut buf = vec![0xcc]; // int3
-                let len = buf.len();
-                let local_iov = IoVec::from_mut_slice(&mut buf);
-                let remote_iov = RemoteIoVec { base: addr, len };
-                if let Ok(num_bytes) = process_vm_readv(pid, &[local_iov], &[remote_iov]) {
-                    println!("read {num_bytes} byte");
-                    println!("data: {:x}", buf[0]);
-                }
+                return Ok(map);
             }
         }
     }
+    Err(io::ErrorKind::NotFound)
+}
+
+fn test_process_vm_readv(
+    pid: Pid,
+    base: usize,
+    len: usize,
+    buf: &mut Vec<u8>,
+) -> Result<usize, nix::errno::Errno> {
+    let local_iov = IoVec::from_mut_slice(buf);
+    let remote_iov = RemoteIoVec { base, len };
+    process_vm_readv(pid, &[local_iov], &[remote_iov])
 }
