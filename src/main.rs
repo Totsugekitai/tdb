@@ -13,6 +13,8 @@ use nix::unistd::{
     ForkResult::{Child, Parent},
 };
 
+pub const DEBUGGER_NAME: &'static str = "tdb";
+
 fn main() {
     let args = Args::parse();
 

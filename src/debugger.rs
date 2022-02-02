@@ -4,12 +4,14 @@ use crate::{
         get_regs, get_syscall_info, init_syscall_stack, pop_syscall_stack, push_syscall_stack,
         top_syscall_number_in_syscall_stack,
     },
+    DEBUGGER_NAME,
 };
 use nix::{
     libc::{PTRACE_O_TRACEEXEC, PTRACE_O_TRACESYSGOOD},
     sys::{
         ptrace,
         signal::Signal,
+        uio::{process_vm_readv, IoVec, RemoteIoVec},
         wait::{
             waitpid, WaitPidFlag,
             WaitStatus::{
@@ -19,6 +21,7 @@ use nix::{
     },
     unistd::Pid,
 };
+use proc_maps::get_process_maps;
 use std::{
     io::{self, BufRead},
     process::exit,
@@ -31,6 +34,8 @@ pub fn debugger_main(child: Pid, filename: &str) {
 
     get_debug_info(filename);
     init_syscall_stack();
+
+    test_readv(child);
 
     loop {
         let wait_options =
@@ -139,4 +144,35 @@ fn intext() {
     handle.read_line(&mut buf).unwrap();
 
     println!("{buf}");
+}
+
+fn test_readv(pid: Pid) {
+    let maps = get_process_maps(pid.as_raw()).unwrap();
+    for map in maps {
+        if map.is_exec() {
+            let path_filename = map
+                .filename()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap();
+            if path_filename == DEBUGGER_NAME {
+                println!(
+                    "exec maps - pid: {pid}, name: {}, start: 0x{:x}",
+                    map.filename().unwrap().as_os_str().to_str().unwrap(),
+                    map.start()
+                );
+                let addr = map.start();
+                let mut buf = vec![0xcc]; // int3
+                let len = buf.len();
+                let local_iov = IoVec::from_mut_slice(&mut buf);
+                let remote_iov = RemoteIoVec { base: addr, len };
+                if let Ok(num_bytes) = process_vm_readv(pid, &[local_iov], &[remote_iov]) {
+                    println!("read {num_bytes} byte");
+                    println!("data: {:x}", buf[0]);
+                }
+            }
+        }
+    }
 }
