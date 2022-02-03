@@ -10,7 +10,7 @@ use nix::{
     libc::{PTRACE_O_TRACEEXEC, PTRACE_O_TRACESYSGOOD},
     sys::{
         ptrace,
-        signal::Signal,
+        signal::{self, SaFlags, SigAction, SigHandler, SigSet, Signal},
         uio::{process_vm_readv, IoVec, RemoteIoVec},
         wait::{
             waitpid, WaitPidFlag,
@@ -21,43 +21,75 @@ use nix::{
     },
     unistd::Pid,
 };
+use once_cell::sync::OnceCell;
 use proc_maps::{get_process_maps, MapRange};
 use std::{
-    io::{self, BufRead},
+    io::{self, BufRead, Write},
     process::exit,
+    sync::Mutex,
 };
+
+static CHILD_PID: OnceCell<Mutex<Pid>> = OnceCell::new();
+
+fn init_child_pid(child: Pid) {
+    let _ = CHILD_PID.set(Mutex::new(child));
+}
 
 pub fn debugger_main(child: Pid, filename: &str) {
     if let Err(e) = ptrace::attach(child) {
         panic!("ptrace::attach failed, errno: {e}");
     }
 
+    // init
+    {
+        init_syscall_stack();
+        init_child_pid(child);
+    }
+
+    set_signal_handler();
     get_debug_info(filename);
-    init_syscall_stack();
 
-    let (base, len) = if let Ok(m) = get_child_process_memory_info(child) {
-        (m.start(), m.size())
-    } else {
-        panic!("get_child_process_memory_info error");
-    };
-
-    let mut buf = vec![0; len];
-    if let Ok(num_bytes) = test_process_vm_readv(child, base, len, &mut buf) {
-        if num_bytes != 0 {
-            println!("read {num_bytes} byte");
-            for (i, b) in buf.iter().enumerate() {
-                if i > 4 {
-                    break;
+    // test
+    {
+        let (base, len) = if let Ok(m) = get_child_process_memory_info(child) {
+            (m.start(), m.size())
+        } else {
+            panic!("get_child_process_memory_info error");
+        };
+        let mut buf = vec![0; len];
+        if let Ok(num_bytes) = test_process_vm_readv(child, base, len, &mut buf) {
+            if num_bytes != 0 {
+                println!("read {num_bytes} byte");
+                for (i, b) in buf.iter().enumerate() {
+                    if i > 4 {
+                        break;
+                    }
+                    println!("0x{:x}: 0x{:02x}", base + i, b);
                 }
-                println!("0x{:x}: 0x{:02x}", base + i, b);
             }
         }
     }
 
     loop {
+        let command = match input_command() {
+            Ok(command) => command,
+            Err(e) => {
+                println!("{}", e.to_string());
+                continue;
+            }
+        };
+
+        match command {
+            InputCommand::Breakpoint(addr) => {
+                set_breakpoint(addr);
+                continue;
+            }
+            InputCommand::StepInstruction => {}
+            InputCommand::Continue => continue,
+        }
+
         let wait_options =
             WaitPidFlag::from_bits(WaitPidFlag::WCONTINUED.bits() | WaitPidFlag::WUNTRACED.bits());
-
         let status = waitpid(child, wait_options);
 
         let status = match status {
@@ -80,6 +112,21 @@ pub fn debugger_main(child: Pid, filename: &str) {
             Stopped(pid, signal) => stopped(pid, signal),
         }
     }
+}
+
+fn set_signal_handler() {
+    let mut mask = SigSet::empty();
+    mask.add(Signal::SIGINT);
+    let handler = SigHandler::Handler(sigint_handler);
+    let sigaction = SigAction::new(handler, SaFlags::empty(), SigSet::empty());
+    let _sigaction = unsafe { signal::sigaction(Signal::SIGINT, &sigaction) };
+}
+
+extern "C" fn sigint_handler(_signum: libc::c_int) {
+    let child_pid = CHILD_PID.get().unwrap().lock().unwrap();
+    let _kr = signal::kill(*child_pid, Signal::SIGKILL);
+    println!("kbd interrupt");
+    exit(0);
 }
 
 fn continued(pid: Pid) {
@@ -152,16 +199,54 @@ fn stopped(pid: Pid, signal: Signal) {
     }
 }
 
-#[allow(unused)]
-fn intext() {
+#[derive(Debug)]
+enum InputCommand {
+    StepInstruction,
+    Breakpoint(usize),
+    Continue,
+}
+
+fn input_command() -> Result<InputCommand, io::Error> {
+    let stdout = io::stdout();
+    let mut out_handle = stdout.lock();
+    out_handle.write(b"> ").unwrap();
+    out_handle.flush().unwrap();
+
     let stdin = io::stdin();
-    let mut handle = stdin.lock();
+    let mut in_handle = stdin.lock();
 
     let mut buf = String::new();
-    handle.read_line(&mut buf).unwrap();
+    in_handle.read_line(&mut buf).unwrap();
+    let buf_vec: Vec<&str> = buf.split(' ').collect();
+    let buf_vec: Vec<&str> = buf_vec.iter().map(|s| s.trim()).collect(); // read_line()で末尾に\nが付くため
 
-    println!("{buf}");
+    use self::InputCommand::*;
+    use io::{Error, ErrorKind};
+    match buf_vec[0] {
+        "stepi" | "si" => Ok(StepInstruction),
+        "break" | "b" => {
+            if buf_vec.len() == 2 {
+                let bp = buf_vec[1];
+                let addr = if let Ok(u) = bp.parse::<usize>() {
+                    u
+                } else {
+                    find_breakpoint_address()
+                };
+                Ok(Breakpoint(addr))
+            } else {
+                Err(Error::new(ErrorKind::InvalidInput, "invalid argument"))
+            }
+        }
+        "continue" | "c" => Ok(Continue),
+        _ => Err(Error::new(ErrorKind::NotFound, "command not found")),
+    }
 }
+
+fn find_breakpoint_address() -> usize {
+    0 // TODO: implementation
+}
+
+fn set_breakpoint(addr: usize) {}
 
 fn get_child_process_memory_info(child: Pid) -> Result<MapRange, io::ErrorKind> {
     let maps = get_process_maps(child.as_raw()).unwrap();
