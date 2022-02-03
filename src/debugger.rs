@@ -46,10 +46,10 @@ pub fn debugger_main(child: Pid, filename: &str) {
         if num_bytes != 0 {
             println!("read {num_bytes} byte");
             for (i, b) in buf.iter().enumerate() {
-                println!("0x{:x}: 0x{:02x}", base + i, b);
-                if i > 100 {
+                if i > 4 {
                     break;
                 }
+                println!("0x{:x}: 0x{:02x}", base + i, b);
             }
         }
     }
