@@ -1,16 +1,120 @@
 use gimli::{
     self,
-    read::{AttributeValue, DieReference, EvaluationResult},
-    DebugLineOffset, Dwarf, EndianSlice, RunTimeEndian,
+    read::{AttributeValue, AttrsIter, DieReference, EvaluationResult},
+    DebugLineOffset, Dwarf, EndianSlice, Reader, RunTimeEndian,
 };
 use object::{Object, ObjectSection};
 use std::{
     borrow::{self, Cow},
-    fs::File,
+    fs,
 };
 
-pub fn get_debug_info(filename: &str) {
-    let file = File::open(filename).unwrap();
+pub fn get_breakpoint_offset(bp_symbol_name: &str, fn_info: &[FunctionInfo]) -> Option<usize> {
+    for f in fn_info {
+        if f.name == bp_symbol_name {
+            return Some(f.offset);
+        }
+    }
+    None
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionInfo {
+    pub name: String,
+    pub offset: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct TdbDebugInfo {
+    pub fn_info_vec: Vec<FunctionInfo>,
+}
+
+impl TdbDebugInfo {
+    pub fn init(filename: &str) -> Self {
+        let file = fs::File::open(filename).unwrap();
+        let mmap = unsafe { memmap::Mmap::map(&file).unwrap() };
+        let object = object::File::parse(&*mmap).unwrap();
+        let endian = if object.is_little_endian() {
+            gimli::RunTimeEndian::Little
+        } else {
+            gimli::RunTimeEndian::Big
+        };
+        let dwarf_cow = get_dwarf_cow(&object).unwrap();
+        let dwarf = get_dwarf(&dwarf_cow, endian);
+
+        let mut fn_info_vec = Vec::new();
+
+        let mut iter = dwarf.units();
+        while let Some(header) = iter.next().unwrap() {
+            let unit = dwarf.unit(header).unwrap();
+
+            let mut entries = unit.entries();
+            while let Some((_, entry)) = entries.next_dfs().unwrap() {
+                let mut attrs = entry.attrs();
+                match entry.tag() {
+                    gimli::DW_TAG_subprogram => {
+                        let fn_info = Self::get_fn_info(&dwarf, &mut attrs);
+                        fn_info_vec.push(fn_info);
+                    }
+                    _ => continue,
+                }
+            }
+        }
+        Self { fn_info_vec }
+    }
+
+    fn get_fn_info<R: Reader<Offset = usize>>(
+        dwarf: &Dwarf<EndianSlice<RunTimeEndian>>,
+        attrs: &mut AttrsIter<R>,
+    ) -> FunctionInfo {
+        let mut offset = 0;
+        let mut name = String::new();
+
+        while let Some(attr) = attrs.next().unwrap() {
+            match attr.name() {
+                gimli::DW_AT_low_pc => {
+                    offset = Self::get_fn_offset(&attr.value());
+                }
+                gimli::DW_AT_name => {
+                    name = Self::get_fn_name(&dwarf, &attr.value());
+                }
+                _ => continue,
+            }
+        }
+
+        println!("[func] name: {name}, offset: {offset}");
+        FunctionInfo { name, offset }
+    }
+
+    fn get_fn_offset<R: Reader<Offset = usize>>(val: &AttributeValue<R>) -> usize {
+        match val {
+            AttributeValue::Addr(offset) => offset.to_owned() as usize,
+            _ => panic!("bad type!"),
+        }
+    }
+
+    fn get_fn_name<R: Reader<Offset = usize>>(
+        dwarf: &Dwarf<EndianSlice<RunTimeEndian>>,
+        val: &AttributeValue<R>,
+    ) -> String {
+        match val {
+            AttributeValue::DebugStrRef(doffset) => {
+                let debug_str = dwarf.debug_str;
+                let s = debug_str
+                    .get_str(doffset.to_owned())
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                String::from(format!("{s}"))
+            }
+            _ => panic!("bad type!"),
+        }
+    }
+}
+
+#[allow(unused)]
+pub fn dump_debug_info(filename: &str) {
+    let file = fs::File::open(filename).unwrap();
     let mmap = unsafe { memmap::Mmap::map(&file).unwrap() };
     let object = object::File::parse(&*mmap).unwrap();
     let endian = if object.is_little_endian() {
@@ -76,6 +180,7 @@ pub fn get_debug_info(filename: &str) {
                     AttributeValue::Data2(d) => format!("Data2(0x{:04x})", d),
                     AttributeValue::Data4(d) => format!("Data4(0x{:08x})", d),
                     AttributeValue::Data8(d) => format!("Data8(0x{:016x})", d),
+                    AttributeValue::Addr(addr) => format!("Addr(0x{:016x})", addr),
                     AttributeValue::Encoding(ate) => format!("{}", ate.static_string().unwrap()),
                     AttributeValue::Exprloc(e) => {
                         let eval_result = e.evaluation(unit.encoding()).evaluate().unwrap();

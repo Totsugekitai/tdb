@@ -1,5 +1,6 @@
+#[allow(unused)]
 use crate::{
-    dwarf::get_debug_info,
+    dwarf::{self, dump_debug_info, TdbDebugInfo},
     syscall::{
         get_regs, get_syscall_info, init_syscall_stack, pop_syscall_stack, push_syscall_stack,
         top_syscall_number_in_syscall_stack,
@@ -24,6 +25,7 @@ use nix::{
 use once_cell::sync::OnceCell;
 use proc_maps::{get_process_maps, MapRange};
 use std::{
+    collections::BTreeMap,
     io::{self, BufRead, Write},
     process::exit,
     sync::Mutex,
@@ -41,37 +43,35 @@ pub fn debugger_main(child: Pid, filename: &str) {
     }
 
     // init
-    {
-        init_syscall_stack();
-        init_child_pid(child);
-    }
-
+    init_syscall_stack();
+    init_breakpoints_map();
+    init_child_pid(child);
+    let debug_info = TdbDebugInfo::init(filename);
     set_signal_handler();
-    get_debug_info(filename);
+
+    dump_debug_info(filename);
 
     // test
-    {
-        let (base, len) = if let Ok(m) = get_child_process_memory_info(child) {
-            (m.start(), m.size())
-        } else {
-            panic!("get_child_process_memory_info error");
-        };
-        let mut buf = vec![0; len];
-        if let Ok(num_bytes) = test_process_vm_readv(child, base, len, &mut buf) {
-            if num_bytes != 0 {
-                println!("read {num_bytes} byte");
-                for (i, b) in buf.iter().enumerate() {
-                    if i > 4 {
-                        break;
-                    }
-                    println!("0x{:x}: 0x{:02x}", base + i, b);
+    let (base, len) = if let Ok(m) = get_child_process_memory_info(child) {
+        (m.start(), m.size())
+    } else {
+        panic!("get_child_process_memory_info error");
+    };
+    let mut buf = vec![0; len];
+    if let Ok(num_bytes) = test_process_vm_readv(child, base, len, &mut buf) {
+        if num_bytes != 0 {
+            println!("read {num_bytes} byte");
+            for (i, b) in buf.iter().enumerate() {
+                if i > 4 {
+                    break;
                 }
+                println!("0x{:x}: 0x{:02x}", base + i, b);
             }
         }
     }
 
     loop {
-        let command = match input_command() {
+        let command = match input_command(&debug_info) {
             Ok(command) => command,
             Err(e) => {
                 println!("{}", e.to_string());
@@ -80,8 +80,10 @@ pub fn debugger_main(child: Pid, filename: &str) {
         };
 
         match command {
-            InputCommand::Breakpoint(addr) => {
+            InputCommand::Breakpoint(offset) => {
+                let addr = base + offset;
                 set_breakpoint(addr);
+                println!("set breakpoint: 0x{:016x}", addr);
                 continue;
             }
             InputCommand::StepInstruction => {}
@@ -206,7 +208,7 @@ enum InputCommand {
     Continue,
 }
 
-fn input_command() -> Result<InputCommand, io::Error> {
+fn input_command(debug_info: &TdbDebugInfo) -> Result<InputCommand, io::Error> {
     let stdout = io::stdout();
     let mut out_handle = stdout.lock();
     out_handle.write(b"> ").unwrap();
@@ -230,7 +232,11 @@ fn input_command() -> Result<InputCommand, io::Error> {
                 let addr = if let Ok(u) = bp.parse::<usize>() {
                     u
                 } else {
-                    find_breakpoint_address()
+                    if let Some(address) = find_breakpoint_address(bp, debug_info) {
+                        address
+                    } else {
+                        return Err(Error::new(ErrorKind::NotFound, "breakpoint not found"));
+                    }
                 };
                 Ok(Breakpoint(addr))
             } else {
@@ -242,13 +248,21 @@ fn input_command() -> Result<InputCommand, io::Error> {
     }
 }
 
-fn find_breakpoint_address() -> usize {
-    0 // TODO: implementation
+static BREAKPOINTS: OnceCell<Mutex<BTreeMap<String, usize>>> = OnceCell::new();
+
+fn init_breakpoints_map() {
+    let _ = BREAKPOINTS.set(Mutex::new(BTreeMap::new()));
 }
 
-fn set_breakpoint(addr: usize) {}
+fn find_breakpoint_address(bp_str: &str, debug_info: &TdbDebugInfo) -> Option<usize> {
+    dwarf::get_breakpoint_offset(bp_str, &debug_info.fn_info_vec)
+}
 
-fn get_child_process_memory_info(child: Pid) -> Result<MapRange, io::ErrorKind> {
+fn set_breakpoint(_addr: usize) {
+    // TODO: implement
+}
+
+fn get_child_process_memory_info(child: Pid) -> Result<MapRange, io::Error> {
     let maps = get_process_maps(child.as_raw()).unwrap();
     for map in maps {
         if map.is_exec() {
@@ -264,7 +278,10 @@ fn get_child_process_memory_info(child: Pid) -> Result<MapRange, io::ErrorKind> 
             }
         }
     }
-    Err(io::ErrorKind::NotFound)
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "child process not found",
+    ))
 }
 
 fn test_process_vm_readv(
