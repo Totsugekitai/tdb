@@ -20,4 +20,4 @@
 
 ### その他
 
-- [GitHub Actions](https://zenn.dev/naokifujita/articles/c890954165c21f)
+- [Rustとgithub actionsでCI環境構築](https://zenn.dev/naokifujita/articles/c890954165c21f)
