@@ -1,11 +1,8 @@
 #[allow(unused)]
 use crate::{
+    breakpoint::BreakpointManager,
     debug_info::{self, dump_debug_info, TdbDebugInfo},
-    syscall::{
-        get_regs, get_syscall_info, init_syscall_stack, pop_syscall_stack, push_syscall_stack,
-        top_syscall_number_in_syscall_stack,
-    },
-    DEBUGGER_NAME,
+    syscall::{get_regs, SyscallInfo, SyscallStack},
 };
 use libc::c_void;
 use nix::{
@@ -26,7 +23,6 @@ use nix::{
 use once_cell::sync::OnceCell;
 use proc_maps::{get_process_maps, MapRange};
 use std::{
-    collections::BTreeMap,
     io::{self, BufRead, Write},
     path::Path,
     process::exit,
@@ -36,7 +32,14 @@ use std::{
 static CHILD_PID: OnceCell<Mutex<Pid>> = OnceCell::new();
 
 fn init_child_pid(child: Pid) {
-    let _ = CHILD_PID.set(Mutex::new(child));
+    CHILD_PID.set(Mutex::new(child)).unwrap();
+}
+
+extern "C" fn sigint_handler(_signum: libc::c_int) {
+    let child_pid = CHILD_PID.get().unwrap().lock().unwrap();
+    let _kr = signal::kill(*child_pid, Signal::SIGKILL);
+    println!("kbd interrupt");
+    exit(0);
 }
 
 pub fn debugger_main(child: Pid, filename: &str) {
@@ -45,11 +48,9 @@ pub fn debugger_main(child: Pid, filename: &str) {
     }
 
     // init
-    init_syscall_stack();
-    unsafe {
-        init_breakpoints_map();
-    }
     init_child_pid(child);
+    let mut syscall_stack = SyscallStack::new();
+    let mut breakpoint_manager = BreakpointManager::new(child);
     let debug_info = TdbDebugInfo::init(filename);
     set_signal_handler();
 
@@ -68,7 +69,7 @@ pub fn debugger_main(child: Pid, filename: &str) {
             init_base = m.start();
             break;
         } else {
-            ptrace_syscall_catch_syscall(child);
+            ptrace_syscall_catch_syscall(child, &mut syscall_stack);
         }
     }
 
@@ -76,7 +77,6 @@ pub fn debugger_main(child: Pid, filename: &str) {
     {
         let regs = ptrace::getregs(child);
         println!("{:x?}", &regs);
-        // dump_process_memory_info(child);
 
         let command = match input_command(&debug_info) {
             Ok(command) => command,
@@ -88,8 +88,9 @@ pub fn debugger_main(child: Pid, filename: &str) {
                 let base = init_base - 0x1000;
                 println!("base: 0x{:x}", base);
                 println!("offset: 0x{:x}", offset);
-                let addr = base + offset;
-                let byte = unsafe { set_breakpoint(child, addr) };
+                let addr = (base + offset) as u64;
+                // let byte = unsafe { set_breakpoint(child, addr) };
+                let byte = breakpoint_manager.set(addr);
                 println!(
                     "set breakpoint: 0x{:016x}, top: 0x{:x}",
                     addr,
@@ -120,7 +121,7 @@ pub fn debugger_main(child: Pid, filename: &str) {
                     Continued(pid) => continued(pid),
                     Exited(pid, exit_code) => exited(pid, exit_code),
                     PtraceEvent(pid, signal, event) => ptrace_event(pid, signal, event),
-                    PtraceSyscall(pid) => ptrace_syscall(pid),
+                    PtraceSyscall(pid) => ptrace_syscall(pid, &mut syscall_stack),
                     Signaled(pid, signal, core_dump) => signaled(pid, signal, core_dump),
                     StillAlive => still_alive(),
                     Stopped(pid, signal) => stopped(pid, signal),
@@ -144,8 +145,9 @@ pub fn debugger_main(child: Pid, filename: &str) {
                 let base = init_base - 0x1000;
                 println!("base: 0x{:x}", base);
                 println!("offset: 0x{:x}", offset);
-                let addr = base + offset;
-                let byte = unsafe { set_breakpoint(child, addr) };
+                let addr = (base + offset) as u64;
+                // let byte = unsafe { set_breakpoint(child, addr) };
+                let byte = breakpoint_manager.set(addr);
                 println!(
                     "set breakpoint: 0x{:016x}, top: 0x{:x}",
                     addr,
@@ -157,11 +159,12 @@ pub fn debugger_main(child: Pid, filename: &str) {
             InputCommand::Continue => {
                 let mut regs = ptrace::getregs(child).unwrap();
                 println!("{:x?}", regs);
-                let rip = regs.rip as usize;
+                let rip = regs.rip;
                 let rip = rip - 1; // 0xccより1byteうしろにいるはず
 
                 // dump_process_memory(child, rip, 0x10);
-                if let Some(val) = get_breakpoint_value(rip) {
+                // if let Some(val) = get_breakpoint_value(rip) {
+                if let Some(val) = breakpoint_manager.get(rip) {
                     println!("breakpoint!");
                     let data = ptrace::read(child, rip as *const c_void as *mut c_void).unwrap();
                     let mut data_vec = data.to_le_bytes();
@@ -185,7 +188,7 @@ pub fn debugger_main(child: Pid, filename: &str) {
                         )
                         .unwrap();
                     }
-                    regs.rip = rip as u64;
+                    regs.rip = rip;
                     ptrace::setregs(child, regs).unwrap();
                 }
             }
@@ -212,7 +215,7 @@ pub fn debugger_main(child: Pid, filename: &str) {
             Continued(pid) => continued(pid),
             Exited(pid, exit_code) => exited(pid, exit_code),
             PtraceEvent(pid, signal, event) => ptrace_event(pid, signal, event),
-            PtraceSyscall(pid) => ptrace_syscall(pid),
+            PtraceSyscall(pid) => ptrace_syscall(pid, &mut syscall_stack),
             Signaled(pid, signal, core_dump) => signaled(pid, signal, core_dump),
             StillAlive => still_alive(),
             Stopped(pid, signal) => stopped(pid, signal),
@@ -226,13 +229,6 @@ fn set_signal_handler() {
     let handler = SigHandler::Handler(sigint_handler);
     let sigaction = SigAction::new(handler, SaFlags::empty(), SigSet::empty());
     let _sigaction = unsafe { signal::sigaction(Signal::SIGINT, &sigaction) };
-}
-
-extern "C" fn sigint_handler(_signum: libc::c_int) {
-    let child_pid = CHILD_PID.get().unwrap().lock().unwrap();
-    let _kr = signal::kill(*child_pid, Signal::SIGKILL);
-    println!("kbd interrupt");
-    exit(0);
 }
 
 fn continued(pid: Pid) {
@@ -258,20 +254,22 @@ fn ptrace_event(pid: Pid, signal: Signal, event: i32) {
     }
 }
 
-fn ptrace_syscall(pid: Pid) {
-    let syscall_info = get_syscall_info(&get_regs(pid));
+fn ptrace_syscall(pid: Pid, syscall_stack: &mut SyscallStack) {
+    // let syscall_info = get_syscall_info(&get_regs(pid));
+    let syscall_info = SyscallInfo::from_regs(&get_regs(pid));
 
-    if let Some(top_syscall_number) = top_syscall_number_in_syscall_stack() {
+    if let Some(top) = syscall_stack.top() {
         // syscallの入口だった場合
-        if top_syscall_number != syscall_info.number {
+        if top.number() != syscall_info.number() {
             println!(
                 "syscall enter: PID: {pid}, {:03}: {}",
-                syscall_info.number, syscall_info.name
+                syscall_info.number(),
+                syscall_info.name()
             );
-            push_syscall_stack(syscall_info);
+            syscall_stack.push(syscall_info);
         }
         // syscallの出口だった場合
-        else if let Some(_s) = pop_syscall_stack() {
+        else if let Some(_s) = syscall_stack.pop() {
             // println!("syscall exit : {}", s.name);
         } else {
             panic!("syscall count failed");
@@ -279,9 +277,10 @@ fn ptrace_syscall(pid: Pid) {
     } else {
         println!(
             "syscall enter: PID: {pid}, {:03}: {}",
-            syscall_info.number, syscall_info.name
+            syscall_info.number(),
+            syscall_info.name()
         );
-        push_syscall_stack(syscall_info);
+        syscall_stack.push(syscall_info);
     }
 
     if let Err(e) = ptrace::cont(pid, None) {
@@ -289,30 +288,32 @@ fn ptrace_syscall(pid: Pid) {
     }
 }
 
-fn ptrace_syscall_catch_syscall(pid: Pid) {
-    let syscall_info = get_syscall_info(&get_regs(pid));
+fn ptrace_syscall_catch_syscall(pid: Pid, syscall_stack: &mut SyscallStack) {
+    let syscall_info = SyscallInfo::from_regs(&get_regs(pid));
 
-    if let Some(top_syscall_number) = top_syscall_number_in_syscall_stack() {
+    if let Some(top) = syscall_stack.top() {
         // syscallの入口だった場合
-        if top_syscall_number != syscall_info.number {
+        if top.number() != syscall_info.number() {
             println!(
                 "syscall enter: PID: {pid}, {:03}: {}",
-                syscall_info.number, syscall_info.name
+                syscall_info.number(),
+                syscall_info.name()
             );
-            push_syscall_stack(syscall_info);
+            syscall_stack.push(syscall_info);
         }
         // syscallの出口だった場合
-        else if let Some(s) = pop_syscall_stack() {
-            println!("syscall exit : {}", s.name);
+        else if let Some(s) = syscall_stack.pop() {
+            println!("syscall exit : {}", s.name());
         } else {
             panic!("syscall count failed");
         }
     } else {
         println!(
             "syscall enter: PID: {pid}, {:03}: {}",
-            syscall_info.number, syscall_info.name
+            syscall_info.number(),
+            syscall_info.name()
         );
-        push_syscall_stack(syscall_info);
+        syscall_stack.push(syscall_info);
     }
 
     if let Err(e) = ptrace::syscall(pid, None) {
@@ -392,65 +393,8 @@ fn input_command(debug_info: &TdbDebugInfo) -> Result<InputCommand, io::Error> {
     }
 }
 
-static mut BREAKPOINTS: OnceCell<Mutex<BTreeMap<usize, u8>>> = OnceCell::new();
-
-unsafe fn init_breakpoints_map() {
-    let _ = BREAKPOINTS.set(Mutex::new(BTreeMap::new()));
-}
-
 fn find_breakpoint_address(bp_str: &str, debug_info: &TdbDebugInfo) -> Option<usize> {
     debug_info::get_breakpoint_offset(bp_str, &debug_info.fn_info_vec)
-}
-
-unsafe fn set_breakpoint(child: Pid, addr: usize) -> Option<u8> {
-    let read_long = ptrace::read(child, addr as *mut c_void);
-    let read_long = match read_long {
-        Ok(i) => i as u64,
-        Err(e) => {
-            println!("failed to ptrace::read: {e}");
-            return None;
-        }
-    };
-    let mut read_long_vec = read_long.to_le_bytes();
-
-    let head = read_long_vec[0];
-
-    read_long_vec[0] = 0xcc;
-
-    let mut write_long = 0;
-    for i in 0..(read_long_vec.len()) {
-        write_long += (read_long_vec[i as usize] as u64) << (i * 8);
-    }
-
-    if let Err(e) = ptrace::write(child, addr as *mut c_void, write_long as *mut c_void) {
-        println!("failed to ptrace::write, {e}");
-        return None;
-    }
-    let read_vec = ptrace::read(child, addr as *mut c_void)
-        .unwrap()
-        .to_le_bytes();
-    assert_eq!(read_vec, read_long_vec);
-
-    {
-        let breakpoints = BREAKPOINTS.get_mut().unwrap().get_mut().unwrap();
-        breakpoints.insert(addr, head);
-    }
-
-    Some(head)
-}
-
-/// get breakpoint value if exists.
-/// `addr` is rip value.
-fn get_breakpoint_value(addr: usize) -> Option<u8> {
-    unsafe {
-        let breakpoints = BREAKPOINTS.get_mut().unwrap().get_mut().unwrap();
-        for (b, val) in breakpoints {
-            if addr == *b {
-                return Some(*val);
-            }
-        }
-        None
-    }
 }
 
 fn get_child_process_memory_info(child: Pid, filename: &str) -> Result<MapRange, io::Error> {

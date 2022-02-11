@@ -1,79 +1,82 @@
 #![allow(unused)]
-
 use libc::user_regs_struct;
 use nix::{sys::ptrace, unistd::Pid};
 use once_cell::sync::OnceCell;
-use std::{collections::LinkedList, sync::Mutex};
+use std::{collections::LinkedList, fmt, sync::Mutex};
 use syscalls::Sysno;
 
-type SyscallNumber = u64;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SyscallNumber(u64);
+
+impl SyscallNumber {
+    fn new(n: u64) -> Self {
+        Self(n)
+    }
+
+    fn from_regs(regs: &user_regs_struct) -> Self {
+        Self(regs.orig_rax)
+    }
+}
+
+impl fmt::Display for SyscallNumber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SyscallInfo {
-    pub number: SyscallNumber,
-    pub name: String,
+    number: SyscallNumber,
+    name: String,
+}
+
+impl SyscallInfo {
+    pub fn from_regs(regs: &user_regs_struct) -> Self {
+        let orig_rax = regs.orig_rax;
+        let sysno = Sysno::new(orig_rax as usize).unwrap();
+        let name = String::from(sysno.name());
+        let number = SyscallNumber::new(orig_rax);
+        Self { number, name }
+    }
+
+    pub fn number(&self) -> SyscallNumber {
+        self.number
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 #[derive(Debug)]
 pub struct SyscallStack(LinkedList<SyscallInfo>);
 
 impl SyscallStack {
-    fn push(&mut self, info: SyscallInfo) {
+    pub fn new() -> Self {
+        Self(LinkedList::new())
+    }
+
+    pub fn push(&mut self, info: SyscallInfo) {
         self.0.push_front(info);
     }
 
-    fn pop(&mut self) -> Option<SyscallInfo> {
+    pub fn pop(&mut self) -> Option<SyscallInfo> {
         self.0.pop_front()
     }
 
-    fn get_top_syscall_number(&self) -> Option<SyscallNumber> {
-        let info = self.0.front();
-        info.map(|info| info.number)
+    pub fn top(&self) -> Option<&SyscallInfo> {
+        self.0.front()
     }
-}
 
-static SYSCALL_STACK: OnceCell<Mutex<SyscallStack>> = OnceCell::new();
-
-pub fn init_syscall_stack() {
-    SYSCALL_STACK.set(Mutex::new(SyscallStack(LinkedList::new())));
-}
-
-pub fn get_syscall_info(regs: &user_regs_struct) -> SyscallInfo {
-    let number = get_syscall_number(regs);
-    let sysno = Sysno::new(number as usize).unwrap();
-    let name = String::from(sysno.name());
-    SyscallInfo { number, name }
+    pub fn is_exit(&self, n: SyscallNumber) -> bool {
+        let front = self.top();
+        match self.top() {
+            Some(t) => n == t.number(),
+            None => false,
+        }
+    }
 }
 
 pub fn get_regs(pid: Pid) -> user_regs_struct {
     ptrace::getregs(pid).unwrap()
-}
-
-fn get_syscall_number(regs: &user_regs_struct) -> SyscallNumber {
-    regs.orig_rax
-}
-
-pub fn push_syscall_stack(info: SyscallInfo) {
-    let mut syscall_stack = SYSCALL_STACK.get().unwrap().lock().unwrap();
-    syscall_stack.push(info);
-}
-
-pub fn pop_syscall_stack() -> Option<SyscallInfo> {
-    let mut syscall_stack = SYSCALL_STACK.get().unwrap().lock().unwrap();
-    syscall_stack.pop()
-}
-
-pub fn top_syscall_number_in_syscall_stack() -> Option<SyscallNumber> {
-    let mut syscall_stack = SYSCALL_STACK.get().unwrap().lock().unwrap();
-    syscall_stack.get_top_syscall_number()
-}
-
-pub fn is_exit(syscall_number: SyscallNumber) -> bool {
-    let syscall_stack = SYSCALL_STACK.get().unwrap().lock().unwrap();
-    let front = syscall_stack.get_top_syscall_number();
-    if let Some(n) = front {
-        n == syscall_number
-    } else {
-        false
-    }
 }
