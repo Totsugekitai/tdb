@@ -137,7 +137,7 @@ pub fn debugger_main(child: Pid, filename: &str) {
         let command = match input_command(&debug_info) {
             Ok(command) => command,
             Err(e) => {
-                println!("{}", e.to_string());
+                println!("{e}");
                 continue;
             }
         };
@@ -244,12 +244,10 @@ fn ptrace_syscall(pid: Pid) {
             push_syscall_stack(syscall_info);
         }
         // syscallの出口だった場合
-        else {
-            if let Some(s) = pop_syscall_stack() {
-                println!("syscall exit : {}", s.name);
-            } else {
-                panic!("syscall count failed");
-            }
+        else if let Some(s) = pop_syscall_stack() {
+            println!("syscall exit : {}", s.name);
+        } else {
+            panic!("syscall count failed");
         }
     } else {
         println!(
@@ -277,12 +275,10 @@ fn ptrace_syscall_catch_syscall(pid: Pid) {
             push_syscall_stack(syscall_info);
         }
         // syscallの出口だった場合
-        else {
-            if let Some(s) = pop_syscall_stack() {
-                println!("syscall exit : {}", s.name);
-            } else {
-                panic!("syscall count failed");
-            }
+        else if let Some(s) = pop_syscall_stack() {
+            println!("syscall exit : {}", s.name);
+        } else {
+            panic!("syscall count failed");
         }
     } else {
         println!(
@@ -337,7 +333,7 @@ enum InputCommand {
 fn input_command(debug_info: &TdbDebugInfo) -> Result<InputCommand, io::Error> {
     let stdout = io::stdout();
     let mut out_handle = stdout.lock();
-    out_handle.write(b"> ").unwrap();
+    let _ = out_handle.write(b"> ").unwrap();
     out_handle.flush().unwrap();
 
     let stdin = io::stdin();
@@ -357,12 +353,10 @@ fn input_command(debug_info: &TdbDebugInfo) -> Result<InputCommand, io::Error> {
                 let bp = buf_vec[1];
                 let addr = if let Ok(u) = bp.parse::<usize>() {
                     u
+                } else if let Some(address) = find_breakpoint_address(bp, debug_info) {
+                    address
                 } else {
-                    if let Some(address) = find_breakpoint_address(bp, debug_info) {
-                        address
-                    } else {
-                        return Err(Error::new(ErrorKind::NotFound, "breakpoint not found"));
-                    }
+                    return Err(Error::new(ErrorKind::NotFound, "breakpoint not found"));
                 };
                 Ok(Breakpoint(addr))
             } else {
@@ -398,7 +392,7 @@ unsafe fn set_breakpoint(child: Pid, addr: usize) -> Option<u8> {
     for l in read_long_vec {
         print!("0x{:02x} ", l);
     }
-    println!("");
+    println!();
 
     let head = read_long_vec[0];
 

@@ -90,7 +90,7 @@ impl TdbDebugInfo {
                     offset = Self::get_dwarf_fn_offset(&attr.value());
                 }
                 gimli::DW_AT_name => {
-                    name = Self::get_dwarf_fn_name(&dwarf, &attr.value());
+                    name = Self::get_dwarf_fn_name(dwarf, &attr.value());
                 }
                 _ => continue,
             }
@@ -119,7 +119,7 @@ impl TdbDebugInfo {
                     .unwrap()
                     .to_string_lossy()
                     .into_owned();
-                String::from(format!("{s}"))
+                s
             }
             _ => panic!("bad type!"),
         }
@@ -165,7 +165,7 @@ pub fn dump_debug_info(filename: &str) {
                             .unwrap()
                             .to_string_lossy()
                             .into_owned();
-                        String::from(format!("{s}"))
+                        s
                     }
                     AttributeValue::String(s) => s.to_string_lossy().into_owned(),
                     AttributeValue::Udata(ud) => format!("0x{:x}", ud),
@@ -177,14 +177,12 @@ pub fn dump_debug_info(filename: &str) {
                             .unwrap();
                         let (program, _sequence) = program.sequences().unwrap();
                         let file_names = program.header().file_names();
-                        format!(
-                            "{}",
-                            dwarf
-                                .attr_string(&unit, file_names[(i - 1) as usize].path_name())
-                                .unwrap()
-                                .to_string_lossy()
-                                .into_owned()
-                        )
+                        dwarf
+                            .attr_string(&unit, file_names[(i - 1) as usize].path_name())
+                            .unwrap()
+                            .to_string_lossy()
+                            .into_owned()
+                            .to_string()
                     }
                     AttributeValue::UnitRef(uoffset) => {
                         // let entry = unit.entry(uoffset).unwrap();
@@ -195,11 +193,11 @@ pub fn dump_debug_info(filename: &str) {
                     AttributeValue::Data4(d) => format!("Data4(0x{:08x})", d),
                     AttributeValue::Data8(d) => format!("Data8(0x{:016x})", d),
                     AttributeValue::Addr(addr) => format!("Addr(0x{:016x})", addr),
-                    AttributeValue::Encoding(ate) => format!("{}", ate.static_string().unwrap()),
+                    AttributeValue::Encoding(ate) => ate.static_string().unwrap().to_string(),
                     AttributeValue::Exprloc(e) => {
                         let eval_result = e.evaluation(unit.encoding()).evaluate().unwrap();
                         match eval_result {
-                            EvaluationResult::Complete => format!("Evaluation(Complete)"),
+                            EvaluationResult::Complete => "Evaluation(Complete)".to_string(),
                             EvaluationResult::RequiresMemory {
                                 address,
                                 size,
@@ -212,9 +210,9 @@ pub fn dump_debug_info(filename: &str) {
                             EvaluationResult::RequiresRegister {
                                 register, base_type
                             } => format!("Evaluation(RequiresRegister) - register: {:?}, base_type: {:?}", register, base_type),
-                            EvaluationResult::RequiresFrameBase => format!("Evaluation(RequiresFrameBase)"),
+                            EvaluationResult::RequiresFrameBase => "Evaluation(RequiresFrameBase)".to_string(),
                             EvaluationResult::RequiresTls(tls) => format!("Evaluation(RequiresTls) - tls: {tls}"),
-                            EvaluationResult::RequiresCallFrameCfa => format!("Evaluation(RequiresCallFrameCfa)"),
+                            EvaluationResult::RequiresCallFrameCfa => "Evaluation(RequiresCallFrameCfa)".to_string(),
                             EvaluationResult::RequiresAtLocation(die_ref) => {
                                 match die_ref {
                                     DieReference::UnitRef(uoffset) => format!("Evaluation(RequiresAtLocation) - die_reference: {:?}", uoffset),
@@ -223,7 +221,7 @@ pub fn dump_debug_info(filename: &str) {
                             },
                             EvaluationResult::RequiresEntryValue(e) => format!("Evaluation(RequiresEntryValue) - expr: {:?}", e),
                             EvaluationResult::RequiresParameterRef(uoffset) => format!("Evaluation(RequiresParameterRef) - offset: {:?}", uoffset),
-                            _ => format!("Exprloc"),
+                            _ => "Exprloc".to_string(),
                         }
                     }
                     _ => format!("{:?}", value),
@@ -255,5 +253,5 @@ fn get_dwarf_cow<'a>(object: &'a object::File) -> Result<Dwarf<Cow<'a, [u8]>>, g
         }
     };
 
-    Ok(Dwarf::load(&load_section)?)
+    Dwarf::load(&load_section)
 }

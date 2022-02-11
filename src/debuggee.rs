@@ -27,9 +27,9 @@ pub fn debuggee_main(filename: &str, args: &Vec<&str>) {
 fn convert_string_ref_to_cstr_ref(s: &str) -> Box<CStr> {
     let mut s_u8_vec = vec![];
     for b in s.as_bytes() {
-        s_u8_vec.push(b.clone());
+        s_u8_vec.push(*b);
     }
-    s_u8_vec.push('\0' as u8);
+    s_u8_vec.push(b'\0');
     let c_string = CString::from_vec_with_nul(s_u8_vec).expect("CString::from_vec_with_nul failed");
     c_string.into_boxed_c_str()
 }

@@ -28,11 +28,7 @@ impl SyscallStack {
 
     fn get_top_syscall_number(&self) -> Option<SyscallNumber> {
         let info = self.0.front();
-        if let Some(info) = info {
-            Some(info.number)
-        } else {
-            None
-        }
+        info.map(|info| info.number)
     }
 }
 
