@@ -33,6 +33,9 @@ fn main() {
     };
     match pid {
         Parent { child } => debugger_main(child, &args.file),
-        Child => debuggee_main(&args.file, &args.args.iter().map(|s| &**s).collect()),
+        Child => debuggee_main(
+            &args.file,
+            &args.args.iter().map(|s| &**s).collect::<Vec<&str>>(),
+        ),
     }
 }
