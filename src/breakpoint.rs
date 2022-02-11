@@ -1,15 +1,52 @@
-use libc::c_void;
-use nix::{sys::ptrace, unistd::Pid};
+use nix::{
+    libc::{c_void, user_regs_struct},
+    sys::ptrace,
+    unistd::Pid,
+};
 
 #[derive(Debug)]
 pub struct Breakpoint {
-    addr: u64,
-    value: u8,
+    pub addr: u64,
+    pub value: u8,
 }
 
 impl Breakpoint {
     pub fn new(addr: u64, value: u8) -> Self {
         Self { addr, value }
+    }
+
+    pub fn restore_memory(
+        &self,
+        pid: Pid,
+        regs: user_regs_struct,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        println!("breakpoint!");
+        let data = ptrace::read(pid, self.addr as *const c_void as *mut c_void).unwrap();
+        let mut data_vec = data.to_le_bytes();
+        if data_vec[0] == 0xcc {
+            data_vec[0] = self.value;
+        } else {
+            panic!(
+                "bad breakpoint! addr: 0x{:x}, value: 0x{:x}",
+                self.addr, data_vec[0]
+            );
+        }
+        let mut data_long = 0;
+        for i in 0..(data_vec.len()) {
+            data_long += (data_vec[i as usize] as u64) << (i * 8);
+        }
+        unsafe {
+            ptrace::write(
+                pid,
+                self.addr as *const c_void as *mut c_void,
+                data_long as *mut c_void,
+            )
+            .unwrap();
+        }
+        let mut regs = regs;
+        regs.rip = self.addr;
+        ptrace::setregs(pid, regs).unwrap();
+        Ok(())
     }
 }
 
@@ -49,10 +86,10 @@ impl BreakpointManager {
     }
 
     /// get breakpoint value if exists
-    pub fn get(&self, addr: u64) -> Option<u8> {
+    pub fn get(&self, addr: u64) -> Option<&Breakpoint> {
         for breakpoint in &self.breakpoints {
             if addr == breakpoint.addr {
-                return Some(breakpoint.value);
+                return Some(breakpoint);
             }
         }
         None

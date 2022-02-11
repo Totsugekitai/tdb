@@ -10,3 +10,10 @@ pub struct Args {
     #[clap(short, long)]
     pub args: Vec<String>,
 }
+
+impl Args {
+    pub fn print_info(&self) {
+        println!("TDB - Totsugekitai DeBugger");
+        println!("target: {}", self.file);
+    }
+}

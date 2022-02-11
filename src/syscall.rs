@@ -1,6 +1,5 @@
 #![allow(unused)]
-use libc::user_regs_struct;
-use nix::{sys::ptrace, unistd::Pid};
+use nix::{libc::user_regs_struct, sys::ptrace, unistd::Pid};
 use once_cell::sync::OnceCell;
 use std::{collections::LinkedList, fmt, sync::Mutex};
 use syscalls::Sysno;

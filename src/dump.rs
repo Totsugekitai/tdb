@@ -1,6 +1,5 @@
 #![allow(unused)]
-use libc::c_void;
-use nix::{sys::ptrace, unistd::Pid};
+use nix::{libc::c_void, sys::ptrace, unistd::Pid};
 use proc_maps::get_process_maps;
 
 pub fn memory_map(pid: Pid) {

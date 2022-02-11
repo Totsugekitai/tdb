@@ -1,5 +1,6 @@
 mod args;
 mod breakpoint;
+mod command;
 mod debug_info;
 mod debugger;
 mod dump;
@@ -7,6 +8,8 @@ mod mem;
 mod signal;
 mod syscall;
 mod target;
+
+use std::path::Path;
 
 use args::Args;
 use clap::StructOpt;
@@ -22,6 +25,7 @@ use target::target_main;
 
 fn main() {
     let args = Args::parse();
+    args.print_info();
 
     let pers = personality::get().unwrap();
     if let Err(e) = personality::set(pers | Persona::ADDR_NO_RANDOMIZE) {
@@ -36,7 +40,7 @@ fn main() {
     match pid {
         Parent { child } => debugger_main(child, &args.file),
         Child => target_main(
-            &args.file,
+            Path::new(&args.file),
             &args.args.iter().map(|s| &**s).collect::<Vec<&str>>(),
         ),
     }
