@@ -9,15 +9,6 @@ use std::{
     fs,
 };
 
-pub fn get_breakpoint_offset(bp_symbol_name: &str, fn_info: &[FunctionInfo]) -> Option<usize> {
-    for f in fn_info {
-        if f.name == bp_symbol_name {
-            return Some(f.offset);
-        }
-    }
-    None
-}
-
 #[derive(Debug, Clone)]
 pub struct FunctionInfo {
     pub name: String,
@@ -64,6 +55,15 @@ impl TdbDebugInfo {
             }
         }
         Self { fn_info_vec }
+    }
+
+    pub fn get_breakpoint_offset(&self, bp_symbol_name: &str) -> Option<usize> {
+        for f in &self.fn_info_vec {
+            if f.name == bp_symbol_name {
+                return Some(f.offset);
+            }
+        }
+        None
     }
 
     fn get_elf_fn_info<'a>(object: &'a object::File, fn_info: &mut Vec<FunctionInfo>) {

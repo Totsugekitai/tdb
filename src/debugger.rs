@@ -1,7 +1,8 @@
 #[allow(unused)]
 use crate::{
     breakpoint::BreakpointManager,
-    debug_info::{self, dump_debug_info, TdbDebugInfo},
+    debug_info::{self, TdbDebugInfo},
+    dump, mem,
     syscall::{get_regs, SyscallInfo, SyscallStack},
 };
 use libc::c_void;
@@ -10,37 +11,15 @@ use nix::{
     libc::{PTRACE_O_TRACEEXEC, PTRACE_O_TRACESYSGOOD},
     sys::{
         ptrace,
-        signal::{self, SaFlags, SigAction, SigHandler, SigSet, Signal},
-        wait::{
-            waitpid, WaitPidFlag,
-            WaitStatus::{
-                self, Continued, Exited, PtraceEvent, PtraceSyscall, Signaled, StillAlive, Stopped,
-            },
-        },
+        signal::Signal,
+        wait::{waitpid, WaitPidFlag, WaitStatus},
     },
     unistd::Pid,
 };
-use once_cell::sync::OnceCell;
-use proc_maps::{get_process_maps, MapRange};
 use std::{
     io::{self, BufRead, Write},
-    path::Path,
     process::exit,
-    sync::Mutex,
 };
-
-static CHILD_PID: OnceCell<Mutex<Pid>> = OnceCell::new();
-
-fn init_child_pid(child: Pid) {
-    CHILD_PID.set(Mutex::new(child)).unwrap();
-}
-
-extern "C" fn sigint_handler(_signum: libc::c_int) {
-    let child_pid = CHILD_PID.get().unwrap().lock().unwrap();
-    let _kr = signal::kill(*child_pid, Signal::SIGKILL);
-    println!("kbd interrupt");
-    exit(0);
-}
 
 pub fn debugger_main(child: Pid, filename: &str) {
     if let Err(e) = ptrace::attach(child) {
@@ -48,24 +27,21 @@ pub fn debugger_main(child: Pid, filename: &str) {
     }
 
     // init
-    init_child_pid(child);
+    crate::signal::init(child);
     let mut syscall_stack = SyscallStack::new();
     let mut breakpoint_manager = BreakpointManager::new(child);
     let debug_info = TdbDebugInfo::init(filename);
-    set_signal_handler();
 
-    #[allow(unused_assignments)]
-    let mut init_base = 0;
+    let init_base;
     let mut status;
     loop {
-        let regs = ptrace::getregs(child);
-        println!("{:x?}", &regs);
+        dump::register(child);
 
         let wait_options =
             WaitPidFlag::from_bits(WaitPidFlag::WCONTINUED.bits() | WaitPidFlag::WUNTRACED.bits());
         status = waitpid(child, wait_options);
 
-        if let Ok(m) = get_child_process_memory_info(child, filename) {
+        if let Ok(m) = mem::get_exec_segment_info(child, filename) {
             init_base = m.start();
             break;
         } else {
@@ -75,21 +51,19 @@ pub fn debugger_main(child: Pid, filename: &str) {
 
     // 初回は特別扱いする
     {
-        let regs = ptrace::getregs(child);
-        println!("{:x?}", &regs);
+        dump::register(child);
 
-        let command = match input_command(&debug_info) {
+        let command = match Command::read(&debug_info) {
             Ok(command) => command,
             Err(e) => panic!("{}", e.to_string()),
         };
 
         match command {
-            InputCommand::Breakpoint(offset) => {
+            Command::Breakpoint(offset) => {
                 let base = init_base - 0x1000;
                 println!("base: 0x{:x}", base);
                 println!("offset: 0x{:x}", offset);
                 let addr = (base + offset) as u64;
-                // let byte = unsafe { set_breakpoint(child, addr) };
                 let byte = breakpoint_manager.set(addr);
                 println!(
                     "set breakpoint: 0x{:016x}, top: 0x{:x}",
@@ -97,8 +71,8 @@ pub fn debugger_main(child: Pid, filename: &str) {
                     byte.unwrap()
                 );
             }
-            InputCommand::StepInstruction => {}
-            InputCommand::Continue => {
+            Command::StepInstruction => {}
+            Command::Continue => {
                 let status = match status {
                     Ok(status) => {
                         let ptrace_options =
@@ -118,21 +92,20 @@ pub fn debugger_main(child: Pid, filename: &str) {
                 };
 
                 match status {
-                    Continued(pid) => continued(pid),
-                    Exited(pid, exit_code) => exited(pid, exit_code),
-                    PtraceEvent(pid, signal, event) => ptrace_event(pid, signal, event),
-                    PtraceSyscall(pid) => ptrace_syscall(pid, &mut syscall_stack),
-                    Signaled(pid, signal, core_dump) => signaled(pid, signal, core_dump),
-                    StillAlive => still_alive(),
-                    Stopped(pid, signal) => stopped(pid, signal),
+                    WaitStatus::Continued(pid) => continued(pid),
+                    WaitStatus::Exited(pid, exit_code) => exited(pid, exit_code),
+                    WaitStatus::PtraceEvent(pid, signal, event) => ptrace_event(pid, signal, event),
+                    WaitStatus::PtraceSyscall(pid) => ptrace_syscall(pid, &mut syscall_stack),
+                    WaitStatus::Signaled(pid, signal, dump) => signaled(pid, signal, dump),
+                    WaitStatus::StillAlive => still_alive(),
+                    WaitStatus::Stopped(pid, signal) => stopped(pid, signal),
                 }
             }
         }
     }
 
     loop {
-        // dump_process_memory_info(child);
-        let command = match input_command(&debug_info) {
+        let command = match Command::read(&debug_info) {
             Ok(command) => command,
             Err(e) => {
                 println!("{e}");
@@ -141,12 +114,11 @@ pub fn debugger_main(child: Pid, filename: &str) {
         };
 
         match command {
-            InputCommand::Breakpoint(offset) => {
+            Command::Breakpoint(offset) => {
                 let base = init_base - 0x1000;
                 println!("base: 0x{:x}", base);
                 println!("offset: 0x{:x}", offset);
                 let addr = (base + offset) as u64;
-                // let byte = unsafe { set_breakpoint(child, addr) };
                 let byte = breakpoint_manager.set(addr);
                 println!(
                     "set breakpoint: 0x{:016x}, top: 0x{:x}",
@@ -155,15 +127,13 @@ pub fn debugger_main(child: Pid, filename: &str) {
                 );
                 continue;
             }
-            InputCommand::StepInstruction => {}
-            InputCommand::Continue => {
+            Command::StepInstruction => {}
+            Command::Continue => {
                 let mut regs = ptrace::getregs(child).unwrap();
                 println!("{:x?}", regs);
                 let rip = regs.rip;
                 let rip = rip - 1; // 0xccより1byteうしろにいるはず
 
-                // dump_process_memory(child, rip, 0x10);
-                // if let Some(val) = get_breakpoint_value(rip) {
                 if let Some(val) = breakpoint_manager.get(rip) {
                     println!("breakpoint!");
                     let data = ptrace::read(child, rip as *const c_void as *mut c_void).unwrap();
@@ -212,23 +182,15 @@ pub fn debugger_main(child: Pid, filename: &str) {
         };
 
         match status {
-            Continued(pid) => continued(pid),
-            Exited(pid, exit_code) => exited(pid, exit_code),
-            PtraceEvent(pid, signal, event) => ptrace_event(pid, signal, event),
-            PtraceSyscall(pid) => ptrace_syscall(pid, &mut syscall_stack),
-            Signaled(pid, signal, core_dump) => signaled(pid, signal, core_dump),
-            StillAlive => still_alive(),
-            Stopped(pid, signal) => stopped(pid, signal),
+            WaitStatus::Continued(pid) => continued(pid),
+            WaitStatus::Exited(pid, exit_code) => exited(pid, exit_code),
+            WaitStatus::PtraceEvent(pid, signal, event) => ptrace_event(pid, signal, event),
+            WaitStatus::PtraceSyscall(pid) => ptrace_syscall(pid, &mut syscall_stack),
+            WaitStatus::Signaled(pid, signal, dump) => signaled(pid, signal, dump),
+            WaitStatus::StillAlive => still_alive(),
+            WaitStatus::Stopped(pid, signal) => stopped(pid, signal),
         }
     }
-}
-
-fn set_signal_handler() {
-    let mut mask = SigSet::empty();
-    mask.add(Signal::SIGINT);
-    let handler = SigHandler::Handler(sigint_handler);
-    let sigaction = SigAction::new(handler, SaFlags::empty(), SigSet::empty());
-    let _sigaction = unsafe { signal::sigaction(Signal::SIGINT, &sigaction) };
 }
 
 fn continued(pid: Pid) {
@@ -349,96 +311,52 @@ fn stopped(pid: Pid, signal: Signal) {
 }
 
 #[derive(Debug)]
-enum InputCommand {
+enum Command {
     StepInstruction,
     Breakpoint(usize),
     Continue,
 }
 
-fn input_command(debug_info: &TdbDebugInfo) -> Result<InputCommand, io::Error> {
-    let stdout = io::stdout();
-    let mut out_handle = stdout.lock();
-    let _ = out_handle.write(b"> ").unwrap();
-    out_handle.flush().unwrap();
+impl Command {
+    fn read(debug_info: &TdbDebugInfo) -> Result<Command, Box<dyn std::error::Error>> {
+        let stdout = io::stdout();
+        let mut out_handle = stdout.lock();
+        out_handle.write_all(b"> ")?;
+        out_handle.flush()?;
 
-    let stdin = io::stdin();
-    let mut in_handle = stdin.lock();
+        let stdin = io::stdin();
+        let mut in_handle = stdin.lock();
 
-    let mut buf = String::new();
-    in_handle.read_line(&mut buf).unwrap();
-    let buf_vec: Vec<&str> = buf.split(' ').collect();
-    let buf_vec: Vec<&str> = buf_vec.iter().map(|s| s.trim()).collect(); // read_line()で末尾に\nが付くため
+        let mut buf = String::new();
+        in_handle.read_line(&mut buf)?;
+        let buf_vec: Vec<&str> = buf.split(' ').collect();
+        let buf_vec: Vec<&str> = buf_vec.iter().map(|s| s.trim()).collect(); // read_line()で末尾に\nが付くため
 
-    use self::InputCommand::*;
-    use io::{Error, ErrorKind};
-    match buf_vec[0] {
-        "stepi" | "si" => Ok(StepInstruction),
-        "break" | "b" => {
-            if buf_vec.len() == 2 {
-                let bp = buf_vec[1];
-                let addr = if let Ok(u) = bp.parse::<usize>() {
-                    u
-                } else if let Some(address) = find_breakpoint_address(bp, debug_info) {
-                    address
+        use self::Command::*;
+        use io::{Error, ErrorKind};
+        match buf_vec[0] {
+            "stepi" | "si" => Ok(StepInstruction),
+            "break" | "b" => {
+                if buf_vec.len() == 2 {
+                    let bp = buf_vec[1];
+                    let off = debug_info.get_breakpoint_offset(bp);
+                    let off = match off {
+                        Some(off) => off,
+                        None => bp.parse::<usize>()?,
+                    };
+                    Ok(Breakpoint(off))
                 } else {
-                    return Err(Error::new(ErrorKind::NotFound, "breakpoint not found"));
-                };
-                Ok(Breakpoint(addr))
-            } else {
-                Err(Error::new(ErrorKind::InvalidInput, "invalid argument"))
+                    Err(Box::new(Error::new(
+                        ErrorKind::InvalidInput,
+                        "invalid argument",
+                    )))
+                }
             }
+            "continue" | "c" => Ok(Continue),
+            _ => Err(Box::new(Error::new(
+                ErrorKind::NotFound,
+                "command not found",
+            ))),
         }
-        "continue" | "c" => Ok(Continue),
-        _ => Err(Error::new(ErrorKind::NotFound, "command not found")),
-    }
-}
-
-fn find_breakpoint_address(bp_str: &str, debug_info: &TdbDebugInfo) -> Option<usize> {
-    debug_info::get_breakpoint_offset(bp_str, &debug_info.fn_info_vec)
-}
-
-fn get_child_process_memory_info(child: Pid, filename: &str) -> Result<MapRange, io::Error> {
-    let maps = get_process_maps(child.as_raw()).unwrap();
-    for map in maps {
-        if map.is_exec() {
-            let path_filename = map
-                .filename()
-                .unwrap()
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap();
-
-            let child_filename = Path::new(filename).file_name().unwrap().to_str().unwrap();
-
-            if path_filename == child_filename {
-                return Ok(map);
-            }
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "child process not found",
-    ))
-}
-
-#[allow(unused)]
-fn dump_process_memory_map(child: Pid) {
-    let maps = get_process_maps(child.as_raw()).unwrap();
-    for map in maps {
-        println!("{:x?}", map);
-    }
-}
-
-#[allow(unused)]
-fn dump_process_memory(pid: Pid, addr: usize, len: usize) {
-    let num = if (len % 8) == 0 { len / 8 } else { len / 8 + 1 };
-    for i in 0..num {
-        let memdump = ptrace::read(pid, (addr + i * 8) as *mut c_void).unwrap();
-        let memvec = memdump.to_le_bytes();
-        for m in memvec {
-            print!("{:02x} ", m);
-        }
-        println!();
     }
 }

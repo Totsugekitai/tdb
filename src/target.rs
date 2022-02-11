@@ -4,7 +4,7 @@ use std::ffi::{CStr, CString};
 #[derive(Debug)]
 pub struct DebuggeeInfo {}
 
-pub fn debuggee_main(filename: &str, args: &[&str]) {
+pub fn target_main(filename: &str, args: &[&str]) {
     let _ = traceme();
     let cstr = convert_string_ref_to_cstr_ref(filename);
 
@@ -17,8 +17,6 @@ pub fn debuggee_main(filename: &str, args: &[&str]) {
     if args.is_empty() {
         args_cstr.push(convert_string_ref_to_cstr_ref(""));
     }
-
-    std::thread::sleep(std::time::Duration::from_micros(50));
 
     let _ = execvp(&cstr, &args_cstr);
     println!("execvp error!");

@@ -1,13 +1,15 @@
 mod args;
 mod breakpoint;
 mod debug_info;
-mod debuggee;
 mod debugger;
+mod dump;
+mod mem;
+mod signal;
 mod syscall;
+mod target;
 
 use args::Args;
 use clap::StructOpt;
-use debuggee::debuggee_main;
 use debugger::debugger_main;
 use nix::{
     sys::personality::{self, Persona},
@@ -16,6 +18,7 @@ use nix::{
         ForkResult::{Child, Parent},
     },
 };
+use target::target_main;
 
 fn main() {
     let args = Args::parse();
@@ -32,7 +35,7 @@ fn main() {
     };
     match pid {
         Parent { child } => debugger_main(child, &args.file),
-        Child => debuggee_main(
+        Child => target_main(
             &args.file,
             &args.args.iter().map(|s| &**s).collect::<Vec<&str>>(),
         ),
