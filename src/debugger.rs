@@ -46,19 +46,17 @@ pub fn debugger_main(child: Pid, filename: &str) {
 
     // init
     init_syscall_stack();
-    init_breakpoints_map();
+    unsafe {
+        init_breakpoints_map();
+    }
     init_child_pid(child);
     let debug_info = TdbDebugInfo::init(filename);
     set_signal_handler();
 
-    // dump_debug_info(filename);
-
     #[allow(unused_assignments)]
     let mut init_base = 0;
     let mut status;
-    // let mut len = 0;
     loop {
-        // dump_process_memory_info(child);
         let regs = ptrace::getregs(child);
         println!("{:x?}", &regs);
 
@@ -68,7 +66,6 @@ pub fn debugger_main(child: Pid, filename: &str) {
 
         if let Ok(m) = get_child_process_memory_info(child, filename) {
             init_base = m.start();
-            // len = m.size();
             break;
         } else {
             ptrace_syscall_catch_syscall(child);
@@ -157,12 +154,42 @@ pub fn debugger_main(child: Pid, filename: &str) {
                 continue;
             }
             InputCommand::StepInstruction => {}
-            InputCommand::Continue => {}
-        }
+            InputCommand::Continue => {
+                let mut regs = ptrace::getregs(child).unwrap();
+                println!("{:x?}", regs);
+                let rip = regs.rip as usize;
+                let rip = rip - 1; // 0xccより1byteうしろにいるはず
 
-        // let wait_options =
-        //     WaitPidFlag::from_bits(WaitPidFlag::WCONTINUED.bits() | WaitPidFlag::WUNTRACED.bits());
-        // let status = waitpid(child, wait_options);
+                // dump_process_memory(child, rip, 0x10);
+                if let Some(val) = get_breakpoint_value(rip) {
+                    println!("breakpoint!");
+                    let data = ptrace::read(child, rip as *const c_void as *mut c_void).unwrap();
+                    let mut data_vec = data.to_le_bytes();
+                    if data_vec[0] == 0xcc {
+                        data_vec[0] = val;
+                    } else {
+                        panic!(
+                            "bad breakpoint! addr: 0x{:x}, value: 0x{:x}",
+                            rip, data_vec[0]
+                        );
+                    }
+                    let mut data_long = 0;
+                    for i in 0..(data_vec.len()) {
+                        data_long += (data_vec[i as usize] as u64) << (i * 8);
+                    }
+                    unsafe {
+                        ptrace::write(
+                            child,
+                            rip as *const c_void as *mut c_void,
+                            data_long as *mut c_void,
+                        )
+                        .unwrap();
+                    }
+                    regs.rip = rip as u64;
+                    ptrace::setregs(child, regs).unwrap();
+                }
+            }
+        }
 
         let status = match status {
             Ok(status) => {
@@ -215,7 +242,7 @@ fn continued(pid: Pid) {
     }
 }
 
-fn exited(pid: Pid, exit_code: i32) {
+fn exited(pid: Pid, exit_code: i32) -> ! {
     println!("exited: PID: {pid}, exit code: {exit_code}");
     exit(exit_code);
 }
@@ -244,8 +271,8 @@ fn ptrace_syscall(pid: Pid) {
             push_syscall_stack(syscall_info);
         }
         // syscallの出口だった場合
-        else if let Some(s) = pop_syscall_stack() {
-            println!("syscall exit : {}", s.name);
+        else if let Some(_s) = pop_syscall_stack() {
+            // println!("syscall exit : {}", s.name);
         } else {
             panic!("syscall count failed");
         }
@@ -307,9 +334,6 @@ fn still_alive() {
 fn stopped(pid: Pid, signal: Signal) {
     println!("stopped: PID: {pid}, Signal: {:?}", signal);
 
-    let regs = ptrace::getregs(pid);
-    println!("{:x?}", regs);
-
     if signal == Signal::SIGTRAP {
         let signal = None;
         if let Err(e) = ptrace::cont(pid, signal) {
@@ -368,9 +392,9 @@ fn input_command(debug_info: &TdbDebugInfo) -> Result<InputCommand, io::Error> {
     }
 }
 
-static BREAKPOINTS: OnceCell<Mutex<BTreeMap<String, usize>>> = OnceCell::new();
+static mut BREAKPOINTS: OnceCell<Mutex<BTreeMap<usize, u8>>> = OnceCell::new();
 
-fn init_breakpoints_map() {
+unsafe fn init_breakpoints_map() {
     let _ = BREAKPOINTS.set(Mutex::new(BTreeMap::new()));
 }
 
@@ -381,18 +405,13 @@ fn find_breakpoint_address(bp_str: &str, debug_info: &TdbDebugInfo) -> Option<us
 unsafe fn set_breakpoint(child: Pid, addr: usize) -> Option<u8> {
     let read_long = ptrace::read(child, addr as *mut c_void);
     let read_long = match read_long {
-        Ok(i) => i,
+        Ok(i) => i as u64,
         Err(e) => {
             println!("failed to ptrace::read: {e}");
             return None;
         }
     };
     let mut read_long_vec = read_long.to_le_bytes();
-
-    for l in read_long_vec {
-        print!("0x{:02x} ", l);
-    }
-    println!();
 
     let head = read_long_vec[0];
 
@@ -403,18 +422,35 @@ unsafe fn set_breakpoint(child: Pid, addr: usize) -> Option<u8> {
         write_long += (read_long_vec[i as usize] as u64) << (i * 8);
     }
 
-    let write_ref = &write_long;
-
-    if let Err(e) = ptrace::write(
-        child,
-        addr as *mut c_void,
-        write_ref as *const _ as *mut c_void,
-    ) {
+    if let Err(e) = ptrace::write(child, addr as *mut c_void, write_long as *mut c_void) {
         println!("failed to ptrace::write, {e}");
         return None;
     }
+    let read_vec = ptrace::read(child, addr as *mut c_void)
+        .unwrap()
+        .to_le_bytes();
+    assert_eq!(read_vec, read_long_vec);
+
+    {
+        let breakpoints = BREAKPOINTS.get_mut().unwrap().get_mut().unwrap();
+        breakpoints.insert(addr, head);
+    }
 
     Some(head)
+}
+
+/// get breakpoint value if exists.
+/// `addr` is rip value.
+fn get_breakpoint_value(addr: usize) -> Option<u8> {
+    unsafe {
+        let breakpoints = BREAKPOINTS.get_mut().unwrap().get_mut().unwrap();
+        for (b, val) in breakpoints {
+            if addr == *b {
+                return Some(*val);
+            }
+        }
+        None
+    }
 }
 
 fn get_child_process_memory_info(child: Pid, filename: &str) -> Result<MapRange, io::Error> {
@@ -443,9 +479,22 @@ fn get_child_process_memory_info(child: Pid, filename: &str) -> Result<MapRange,
 }
 
 #[allow(unused)]
-fn dump_process_memory_info(child: Pid) {
+fn dump_process_memory_map(child: Pid) {
     let maps = get_process_maps(child.as_raw()).unwrap();
     for map in maps {
         println!("{:x?}", map);
+    }
+}
+
+#[allow(unused)]
+fn dump_process_memory(pid: Pid, addr: usize, len: usize) {
+    let num = if (len % 8) == 0 { len / 8 } else { len / 8 + 1 };
+    for i in 0..num {
+        let memdump = ptrace::read(pid, (addr + i * 8) as *mut c_void).unwrap();
+        let memvec = memdump.to_le_bytes();
+        for m in memvec {
+            print!("{:02x} ", m);
+        }
+        println!();
     }
 }
