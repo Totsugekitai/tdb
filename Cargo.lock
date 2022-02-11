@@ -563,8 +563,8 @@ name = "tdb"
 version = "0.1.0"
 dependencies = [
  "clap 3.0.13",
+ "env_logger",
  "gimli",
- "lazy_static",
  "libc",
  "memmap",
  "nix",

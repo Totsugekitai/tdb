@@ -1,22 +1,30 @@
 mod command_line;
+mod debug_info;
 mod debuggee;
 mod debugger;
-mod dwarf;
 mod syscall;
 
 use clap::StructOpt;
 use command_line::Args;
 use debuggee::debuggee_main;
 use debugger::debugger_main;
-use nix::unistd::{
-    fork,
-    ForkResult::{Child, Parent},
+use nix::{
+    sys::personality::{self, Persona},
+    unistd::{
+        fork,
+        ForkResult::{Child, Parent},
+    },
 };
 
 pub const DEBUGGER_NAME: &'static str = "tdb";
 
 fn main() {
     let args = Args::parse();
+
+    let pers = personality::get().unwrap();
+    if let Err(e) = personality::set(pers | Persona::ADDR_NO_RANDOMIZE) {
+        panic!("failed to disable ASLR {e}");
+    }
 
     let pid = unsafe { fork() };
     let pid = match pid {
