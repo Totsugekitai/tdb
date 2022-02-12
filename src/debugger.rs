@@ -74,7 +74,7 @@ fn catch_syscall(pid: Pid, syscall_stack: &mut SyscallStack) {
             syscall_stack.push(syscall_info);
         }
         // syscallの出口だった場合
-        else if let None = syscall_stack.pop() {
+        else if syscall_stack.pop().is_none() {
             panic!("syscall count failed");
         }
     } else {
