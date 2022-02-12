@@ -1,7 +1,9 @@
 use crate::{
     debugger::DebuggerInfo,
+    dump,
     syscall::{get_regs, SyscallInfo, SyscallStack},
 };
+use hex;
 use nix::{
     libc::{PTRACE_O_TRACEEXEC, PTRACE_O_TRACESYSGOOD},
     sys::{
@@ -22,6 +24,9 @@ pub enum Command {
     Breakpoint(u64),
     Continue,
     DumpRegisters,
+    ExamineMemory(u64, u64),
+    ExamineMemoryMap,
+    SymbolList,
 }
 
 impl Command {
@@ -64,6 +69,35 @@ impl Command {
             }
             "continue" | "c" => Ok(Continue),
             "regs" => Ok(DumpRegisters),
+            "examine" | "x" => {
+                let mut addr = 0;
+                let prefix = &buf_vec[1][0..=1];
+                if prefix == "0x" {
+                    let hex_str = &buf_vec[1][2..];
+                    let addr_decoded = hex::decode(hex_str)?;
+                    for (i, d) in addr_decoded.iter().enumerate() {
+                        addr += (*d as u64) << (addr_decoded.len() - 1 - i) * 8;
+                    }
+                } else {
+                    addr = buf_vec[1].parse::<u64>()?;
+                }
+
+                let mut len = 0;
+                let prefix = &buf_vec[2][0..=1];
+                if prefix == "0x" {
+                    let hex_str = &buf_vec[2][2..];
+                    let len_decoded = hex::decode(hex_str)?;
+                    for (i, d) in len_decoded.iter().enumerate() {
+                        len += (*d as u64) << (len_decoded.len() - 1 - i) * 8;
+                    }
+                } else {
+                    len = buf_vec[2].parse::<u64>()?;
+                }
+
+                Ok(ExamineMemory(addr, len))
+            }
+            "mmap" => Ok(ExamineMemoryMap),
+            "ls" => Ok(SymbolList),
             _ => Err(Box::new(Error::new(
                 ErrorKind::NotFound,
                 "command not found",
@@ -79,7 +113,7 @@ impl Command {
         use Command::*;
         match command {
             Breakpoint(offset) => {
-                let base = debugger_info.exec_base.unwrap() - 0x1000; // code segmentが0x1000から始まる奴しか動かんぜ
+                let base = debugger_info.base_addr;
                 let addr = base + offset;
                 let _byte = debugger_info.breakpoint_manager.set(addr)?;
                 println!("set breakpoint at 0x{:016x}", addr);
@@ -96,6 +130,18 @@ impl Command {
             DumpRegisters => {
                 let regs = get_regs(debugger_info.child);
                 println!("{:x?}", regs);
+                Ok(())
+            }
+            ExamineMemory(addr, len) => {
+                dump::memory(debugger_info.child, addr, len);
+                Ok(())
+            }
+            ExamineMemoryMap => {
+                dump::memory_map(debugger_info.child);
+                Ok(())
+            }
+            SymbolList => {
+                dump::symbols(&debugger_info);
                 Ok(())
             }
         }

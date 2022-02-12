@@ -49,6 +49,5 @@ fn path_to_cstr(path: &Path) -> Box<CStr> {
     }
     s_u8_vec.push(b'\0');
     let c_string = CString::from_vec_with_nul(s_u8_vec).expect("CString::from_vec_with_nul failed");
-    println!("{}", c_string.to_str().unwrap());
     c_string.into_boxed_c_str()
 }

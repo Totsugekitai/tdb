@@ -1,3 +1,4 @@
+#[allow(unused)]
 use gimli::{
     self,
     read::{AttributeValue, AttrsIter, DieReference, EvaluationResult},
@@ -12,12 +13,19 @@ use std::{
 #[derive(Debug, Clone)]
 pub struct FunctionInfo {
     pub name: String,
-    pub offset: usize,
+    pub offset: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct VariableInfo {
+    pub name: String,
+    pub offset: u64,
 }
 
 #[derive(Debug, Clone)]
 pub struct TdbDebugInfo {
     pub fn_info_vec: Vec<FunctionInfo>,
+    pub var_info_vec: Vec<VariableInfo>,
 }
 
 impl TdbDebugInfo {
@@ -25,39 +33,20 @@ impl TdbDebugInfo {
         let file = fs::File::open(filename).unwrap();
         let mmap = unsafe { memmap::Mmap::map(&file).unwrap() };
         let object = object::File::parse(&*mmap).unwrap();
-        let endian = if object.is_little_endian() {
-            gimli::RunTimeEndian::Little
-        } else {
-            gimli::RunTimeEndian::Big
-        };
 
         let mut fn_info_vec = Vec::new();
+        let mut var_info_vec = Vec::new();
 
         Self::get_elf_fn_info(&object, &mut fn_info_vec);
+        Self::get_elf_var_info(&object, &mut var_info_vec);
 
-        let dwarf_cow = get_dwarf_cow(&object).unwrap();
-        let dwarf = get_dwarf(&dwarf_cow, endian);
-
-        let mut iter = dwarf.units();
-        while let Some(header) = iter.next().unwrap() {
-            let unit = dwarf.unit(header).unwrap();
-
-            let mut entries = unit.entries();
-            while let Some((_, entry)) = entries.next_dfs().unwrap() {
-                let mut attrs = entry.attrs();
-                match entry.tag() {
-                    gimli::DW_TAG_subprogram => {
-                        let fn_info = Self::get_dwarf_fn_info(&dwarf, &mut attrs);
-                        fn_info_vec.push(fn_info);
-                    }
-                    _ => continue,
-                }
-            }
+        Self {
+            fn_info_vec,
+            var_info_vec,
         }
-        Self { fn_info_vec }
     }
 
-    pub fn get_breakpoint_offset(&self, bp_symbol_name: &str) -> Option<usize> {
+    pub fn get_breakpoint_offset(&self, bp_symbol_name: &str) -> Option<u64> {
         for f in &self.fn_info_vec {
             if f.name == bp_symbol_name {
                 return Some(f.offset);
@@ -71,59 +60,69 @@ impl TdbDebugInfo {
             if sym.kind() == object::SymbolKind::Text {
                 fn_info.push(FunctionInfo {
                     name: String::from(sym.name().unwrap()),
-                    offset: sym.address() as usize,
+                    offset: sym.address(),
                 });
             }
         }
     }
 
-    fn get_dwarf_fn_info<R: Reader<Offset = usize>>(
-        dwarf: &Dwarf<EndianSlice<RunTimeEndian>>,
-        attrs: &mut AttrsIter<R>,
-    ) -> FunctionInfo {
-        let mut offset = 0;
-        let mut name = String::new();
-
-        while let Some(attr) = attrs.next().unwrap() {
-            match attr.name() {
-                gimli::DW_AT_low_pc => {
-                    offset = Self::get_dwarf_fn_offset(&attr.value());
-                }
-                gimli::DW_AT_name => {
-                    name = Self::get_dwarf_fn_name(dwarf, &attr.value());
-                }
-                _ => continue,
+    fn get_elf_var_info<'a>(object: &'a object::File, var_info: &mut Vec<VariableInfo>) {
+        for sym in object.symbols() {
+            if sym.kind() == object::SymbolKind::Data {
+                var_info.push(VariableInfo {
+                    name: String::from(sym.name().unwrap()),
+                    offset: sym.address(),
+                });
             }
         }
-
-        // println!("[func] name: {name}, offset: {offset}");
-        FunctionInfo { name, offset }
     }
 
-    fn get_dwarf_fn_offset<R: Reader<Offset = usize>>(val: &AttributeValue<R>) -> usize {
-        match val {
-            AttributeValue::Addr(offset) => offset.to_owned() as usize,
-            _ => panic!("bad type!"),
-        }
-    }
+    // fn get_dwarf_fn_info<R: Reader<Offset = usize>>(
+    //     dwarf: &Dwarf<EndianSlice<RunTimeEndian>>,
+    //     attrs: &mut AttrsIter<R>,
+    // ) -> FunctionInfo {
+    //     let mut offset = 0;
+    //     let mut name = String::new();
 
-    fn get_dwarf_fn_name<R: Reader<Offset = usize>>(
-        dwarf: &Dwarf<EndianSlice<RunTimeEndian>>,
-        val: &AttributeValue<R>,
-    ) -> String {
-        match val {
-            AttributeValue::DebugStrRef(doffset) => {
-                let debug_str = dwarf.debug_str;
-                let s = debug_str
-                    .get_str(doffset.to_owned())
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned();
-                s
-            }
-            _ => panic!("bad type!"),
-        }
-    }
+    //     while let Some(attr) = attrs.next().unwrap() {
+    //         match attr.name() {
+    //             gimli::DW_AT_low_pc => {
+    //                 offset = Self::get_dwarf_fn_offset(&attr.value()) as u64;
+    //             }
+    //             gimli::DW_AT_name => {
+    //                 name = Self::get_dwarf_fn_name(dwarf, &attr.value());
+    //             }
+    //             _ => continue,
+    //         }
+    //     }
+
+    //     FunctionInfo { name, offset }
+    // }
+
+    // fn get_dwarf_fn_offset<R: Reader<Offset = usize>>(val: &AttributeValue<R>) -> usize {
+    //     match val {
+    //         AttributeValue::Addr(offset) => offset.to_owned() as usize,
+    //         _ => panic!("bad type!"),
+    //     }
+    // }
+
+    // fn get_dwarf_fn_name<R: Reader<Offset = usize>>(
+    //     dwarf: &Dwarf<EndianSlice<RunTimeEndian>>,
+    //     val: &AttributeValue<R>,
+    // ) -> String {
+    //     match val {
+    //         AttributeValue::DebugStrRef(doffset) => {
+    //             let debug_str = dwarf.debug_str;
+    //             let s = debug_str
+    //                 .get_str(doffset.to_owned())
+    //                 .unwrap()
+    //                 .to_string_lossy()
+    //                 .into_owned();
+    //             s
+    //         }
+    //         _ => panic!("bad type!"),
+    //     }
+    // }
 }
 
 #[allow(unused)]

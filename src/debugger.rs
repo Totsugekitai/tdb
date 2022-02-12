@@ -19,7 +19,7 @@ pub struct DebuggerInfo {
     pub syscall_stack: SyscallStack,
     pub breakpoint_manager: BreakpointManager,
     pub debug_info: TdbDebugInfo,
-    pub exec_base: Option<u64>,
+    pub base_addr: u64,
     pub child: Pid,
 }
 
@@ -34,7 +34,7 @@ pub fn debugger_main(child: Pid, filename: &str) {
         syscall_stack: SyscallStack::new(),
         breakpoint_manager: BreakpointManager::new(child),
         debug_info: TdbDebugInfo::init(filename),
-        exec_base: None,
+        base_addr: 0,
         child,
     };
 
@@ -44,8 +44,8 @@ pub fn debugger_main(child: Pid, filename: &str) {
             WaitPidFlag::from_bits(WaitPidFlag::WCONTINUED.bits() | WaitPidFlag::WUNTRACED.bits());
         status = waitpid(child, wait_options).unwrap();
 
-        if let Ok(m) = mem::get_exec_segment_info(child, filename) {
-            debugger_info.exec_base = Some(m.start() as u64);
+        if let Ok(m) = mem::get_bottom_segment_info(child, filename) {
+            debugger_info.base_addr = m.start() as u64;
             break;
         } else {
             catch_syscall(child, &mut debugger_info.syscall_stack);
