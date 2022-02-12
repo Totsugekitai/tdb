@@ -31,21 +31,14 @@ pub fn get_bottom_segment_info(pid: Pid, filename: &str) -> Result<MapRange, io:
     for map in maps {
         let path_filename = map.filename();
 
-        if path_filename.is_some() {
-            let path_filename = path_filename
-                .unwrap()
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap();
+        if let Some(path_filename) = path_filename {
+            let path_filename = path_filename.file_name().unwrap().to_str().unwrap();
 
             let proc_filename = Path::new(filename).file_name().unwrap().to_str().unwrap();
 
-            if path_filename == proc_filename {
-                if (map.start() as u64) < bottom_segment.0 {
-                    bottom_segment.0 = map.start() as u64;
-                    bottom_segment.1 = Some(map);
-                }
+            if path_filename == proc_filename && (map.start() as u64) < bottom_segment.0 {
+                bottom_segment.0 = map.start() as u64;
+                bottom_segment.1 = Some(map);
             }
         }
     }

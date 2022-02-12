@@ -15,7 +15,10 @@ pub fn memory_map(pid: Pid) {
             map.start() + map.size(),
             map.offset,
             map.flags,
-            map.filename().unwrap_or(&Path::new("")).to_str().unwrap()
+            map.filename()
+                .unwrap_or_else(|| Path::new(""))
+                .to_str()
+                .unwrap()
         );
     }
 }

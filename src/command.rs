@@ -3,7 +3,6 @@ use crate::{
     dump,
     syscall::{get_regs, SyscallInfo, SyscallStack},
 };
-use hex;
 use nix::{
     libc::{PTRACE_O_TRACEEXEC, PTRACE_O_TRACESYSGOOD},
     sys::{
@@ -76,7 +75,7 @@ impl Command {
                     let hex_str = &buf_vec[1][2..];
                     let addr_decoded = hex::decode(hex_str)?;
                     for (i, d) in addr_decoded.iter().enumerate() {
-                        addr += (*d as u64) << (addr_decoded.len() - 1 - i) * 8;
+                        addr += (*d as u64) << ((addr_decoded.len() - 1 - i) * 8);
                     }
                 } else {
                     addr = buf_vec[1].parse::<u64>()?;
@@ -88,7 +87,7 @@ impl Command {
                     let hex_str = &buf_vec[2][2..];
                     let len_decoded = hex::decode(hex_str)?;
                     for (i, d) in len_decoded.iter().enumerate() {
-                        len += (*d as u64) << (len_decoded.len() - 1 - i) * 8;
+                        len += (*d as u64) << ((len_decoded.len() - 1 - i) * 8);
                     }
                 } else {
                     len = buf_vec[2].parse::<u64>()?;
@@ -141,7 +140,7 @@ impl Command {
                 Ok(())
             }
             SymbolList => {
-                dump::symbols(&debugger_info);
+                dump::symbols(debugger_info);
                 Ok(())
             }
         }
