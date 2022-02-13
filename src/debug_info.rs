@@ -141,7 +141,7 @@ impl TdbDebugInfo {
                 exec_maps.push(m);
             }
         }
-        if exec_maps.len() > 0 {
+        if !exec_maps.is_empty() {
             Ok(exec_maps)
         } else {
             Err(Box::new(io::Error::new(
@@ -159,7 +159,7 @@ impl TdbDebugInfo {
                 data_maps.push(m);
             }
         }
-        if data_maps.len() > 0 {
+        if !data_maps.is_empty() {
             Ok(data_maps)
         } else {
             Err(Box::new(io::Error::new(
@@ -176,7 +176,7 @@ impl TdbDebugInfo {
                 rodata_maps.push(m);
             }
         }
-        if rodata_maps.len() > 0 {
+        if !rodata_maps.is_empty() {
             Ok(rodata_maps)
         } else {
             Err(Box::new(io::Error::new(
