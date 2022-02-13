@@ -1,6 +1,6 @@
 # Totsugekitai DeBugger
 
-自作デバッガ
+Toy/Tiny DeBugger written in Rust
 
 ## TODO
 
