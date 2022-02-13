@@ -4,7 +4,7 @@ Toy/Tiny DeBugger written in Rust
 
 ## TODO
 
-- [ ] シングルステップ実行
+- [x] シングルステップ実行
 - [x] ブレークポイント
     - [x] セット
     - [x] 復帰
