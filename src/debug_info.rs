@@ -15,10 +15,15 @@ use std::{
     borrow::{self, Cow},
     fs, io,
 };
+use symbolic::{
+    common::Name,
+    demangle::{Demangle, DemangleOptions},
+};
 
 #[derive(Debug, Clone)]
 pub struct FunctionInfo {
     pub name: String,
+    pub name_demangled: Option<String>,
     pub offset: u64,
 }
 
@@ -36,10 +41,16 @@ impl VariableInfo {
 
         let base_diff = map_start - base_addr;
         let var_offset = if self.offset > base_diff {
-            self.offset - base_diff
+            self.offset - base_diff + map_offset
         } else {
             self.offset
         };
+        println!(
+            "{:x}-{:x}, {:x}",
+            map_offset,
+            map_offset + map_size,
+            var_offset
+        );
         (map_offset <= var_offset) && (var_offset < (map_offset + map_size))
     }
 }
@@ -86,6 +97,11 @@ impl TdbDebugInfo {
 
     pub fn get_breakpoint_offset(&self, bp_symbol_name: &str) -> Option<u64> {
         for f in &self.fn_info_vec {
+            if let Some(demangled) = &f.name_demangled {
+                if demangled == bp_symbol_name {
+                    return Some(f.offset);
+                }
+            }
             if f.name == bp_symbol_name {
                 return Some(f.offset);
             }
@@ -96,8 +112,11 @@ impl TdbDebugInfo {
     fn get_elf_fn_info<'a>(object: &'a object::File, fn_info: &mut Vec<FunctionInfo>) {
         for sym in object.symbols() {
             if sym.kind() == object::SymbolKind::Text {
+                let raw_name = sym.name().unwrap();
+                let demangled = Name::from(raw_name).demangle(DemangleOptions::name_only());
                 fn_info.push(FunctionInfo {
-                    name: String::from(sym.name().unwrap()),
+                    name: raw_name.to_string(),
+                    name_demangled: demangled,
                     offset: sym.address(),
                 });
             }
@@ -151,7 +170,6 @@ impl TdbDebugInfo {
         }
     }
 
-    #[allow(unused)]
     pub fn data_maps(&self) -> Result<Vec<&MapRange>, Box<dyn std::error::Error>> {
         let mut data_maps = Vec::new();
         for m in &self.mmap_info_vec {

@@ -1,8 +1,11 @@
 #![allow(unused)]
-use std::path::Path;
-
 use nix::{libc::c_void, sys::ptrace, unistd::Pid};
 use proc_maps::get_process_maps;
+use std::path::Path;
+use symbolic::{
+    common::Name,
+    demangle::{demangle, Demangle, DemangleOptions},
+};
 
 use crate::debugger::DebuggerInfo;
 
@@ -32,7 +35,7 @@ pub fn memory(pid: Pid, addr: u64, len: u64) {
         len / LONG_SIZE + 1
     };
     for i in 0..num {
-        print!("{:016x}  ", addr + i * 8);
+        print!("0x{:016x}  ", addr + i * 8);
 
         let memdump = ptrace::read(pid, (addr + i * LONG_SIZE) as *mut c_void).unwrap();
         let memvec = memdump.to_le_bytes();
@@ -86,9 +89,19 @@ pub fn register(pid: Pid) {
     println!("eflags: 0x{:016x?}", regs.eflags);
 }
 
-pub fn symbols(debugger_info: &DebuggerInfo) {
-    println!("functions:");
+pub fn all_symbols(debugger_info: &DebuggerInfo) {
+    println!("[functions]");
+    functions(debugger_info);
+    println!();
+    println!("[variables]");
+    variables(debugger_info);
+}
+
+pub fn functions(debugger_info: &DebuggerInfo) {
+    let base_addr = debugger_info.debug_info.base_addr;
     let exec_map = debugger_info.debug_info.exec_maps().unwrap()[0]; // とりあえずコードセグメントが1つだけのバイナリに対応
+    let base_diff = exec_map.start() as u64 - base_addr;
+    let mut f_vec = Vec::new();
     for f in &debugger_info.debug_info.fn_info_vec {
         let exec_map_offset = exec_map.offset as u64;
         let addr = if f.offset >= exec_map_offset {
@@ -96,21 +109,61 @@ pub fn symbols(debugger_info: &DebuggerInfo) {
         } else {
             f.offset
         };
-        println!("0x{:016x}: {}", addr, f.name);
+        let name = if let Some(demangled) = &f.name_demangled {
+            demangled
+        } else {
+            &f.name
+        };
+        f_vec.push((addr, name));
     }
+    f_vec.sort_by(|a, b| a.0.cmp(&b.0));
+    for f in f_vec {
+        println!("0x{:016x}: {}", f.0, f.1);
+    }
+}
 
-    println!();
+pub fn variables(debugger_info: &DebuggerInfo) {
+    let base_addr = debugger_info.debug_info.base_addr;
+    let mut vector = Vec::new();
 
-    println!("variables:");
     let rodata_maps = debugger_info.debug_info.rodata_maps().unwrap();
-    for v in &debugger_info.debug_info.var_info_vec {
-        for rodata_map in &rodata_maps {
-            let base_addr = debugger_info.debug_info.base_addr;
+    for rodata_map in &rodata_maps {
+        let base_diff = rodata_map.start() as u64 - base_addr;
+        for v in &debugger_info.debug_info.var_info_vec {
+            let rodata_map_offset = rodata_map.offset as u64;
             if v.is_included(rodata_map, base_addr) {
-                let rodata_map_offset = rodata_map.offset as u64;
-                let addr = base_addr + v.offset - rodata_map_offset;
-                println!("0x{:016x}: {}", addr, v.name);
+                let addr = if v.offset > base_diff {
+                    let var_offset = v.offset - base_diff;
+                    base_addr + var_offset
+                } else {
+                    v.offset
+                };
+                vector.push((addr, &v.name));
             }
         }
+    }
+
+    let data_maps = debugger_info.debug_info.data_maps().unwrap();
+    for data_map in &data_maps {
+        let base_diff = data_map.start() as u64 - base_addr;
+        for v in &debugger_info.debug_info.var_info_vec {
+            let data_map_offset = data_map.offset as u64;
+            if v.is_included(data_map, base_addr) {
+                let addr = if v.offset > base_diff {
+                    let var_offset = v.offset - base_diff;
+                    base_addr + var_offset
+                } else {
+                    v.offset
+                };
+                vector.push((addr, &v.name));
+            }
+        }
+    }
+
+    vector.sort_by(|a, b| a.0.cmp(&b.0));
+    for v in vector {
+        let name = Name::from(v.1);
+        let demangled = name.try_demangle(DemangleOptions::name_only());
+        println!("0x{:016x}: {}", v.0, demangled);
     }
 }

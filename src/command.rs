@@ -20,14 +20,21 @@ use std::{
 
 #[derive(Debug)]
 pub enum Command {
+    Empty,
     StepInstruction,
     Breakpoint(u64),
     Continue,
     DumpRegisters,
     ExamineMemory(u64, u64),
     ExamineMemoryMap,
-    SymbolList,
+    List(Vec<String>),
 }
+
+// #[derive(Debug)]
+// enum ListSubCommand {
+//     Function,
+//     Variable,
+// }
 
 impl Command {
     pub fn read(debugger_info: &DebuggerInfo) -> Result<Command, Box<dyn std::error::Error>> {
@@ -47,6 +54,10 @@ impl Command {
             .map(|s| s.trim()) // read_line()で末尾に\nが付くため
             .filter(|s| !s.is_empty())
             .collect();
+
+        if buf_vec.is_empty() {
+            return Ok(Empty);
+        }
 
         use Command::*;
         match buf_vec[0] {
@@ -75,7 +86,13 @@ impl Command {
                 Ok(ExamineMemory(addr, len))
             }
             "mmap" => Ok(ExamineMemoryMap),
-            "ls" => Ok(SymbolList),
+            "ls" => {
+                let sub_commands = buf_vec[1..]
+                    .iter()
+                    .map(|b| b.to_string())
+                    .collect::<Vec<String>>();
+                Ok(List(sub_commands))
+            }
             _ => Err(Box::new(Error::new(
                 ErrorKind::NotFound,
                 "command not found",
@@ -90,6 +107,7 @@ impl Command {
     ) -> Result<(), Box<dyn std::error::Error>> {
         use Command::*;
         match command {
+            Empty => Ok(()),
             Breakpoint(bin_offset) => {
                 // とりあえずコードセグメントが1つだけのバイナリに対応
                 let exec_map = debugger_info.debug_info.exec_maps().unwrap()[0];
@@ -124,8 +142,17 @@ impl Command {
                 dump::memory_map(debugger_info.child);
                 Ok(())
             }
-            SymbolList => {
-                dump::symbols(debugger_info);
+            List(sub_commands) => {
+                if sub_commands.is_empty() {
+                    dump::all_symbols(debugger_info);
+                } else {
+                    let sub_command = &sub_commands[0];
+                    match sub_command.as_str() {
+                        "f" => dump::functions(debugger_info),
+                        "v" => dump::variables(debugger_info),
+                        _ => println!("invalid ls sub command"),
+                    }
+                }
                 Ok(())
             }
         }
