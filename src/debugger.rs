@@ -21,6 +21,7 @@ pub struct DebuggerInfo {
     pub debug_info: TdbDebugInfo,
     pub base_addr: u64,
     pub child: Pid,
+    pub step_flag: bool,
 }
 
 pub fn debugger_main(child: Pid, filename: &str) {
@@ -36,6 +37,7 @@ pub fn debugger_main(child: Pid, filename: &str) {
         debug_info: TdbDebugInfo::init(filename),
         base_addr: 0,
         child,
+        step_flag: false,
     };
 
     let mut status;

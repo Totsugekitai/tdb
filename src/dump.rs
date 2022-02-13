@@ -56,8 +56,34 @@ pub fn memory(pid: Pid, addr: u64, len: u64) {
 }
 
 pub fn register(pid: Pid) {
-    let regs = ptrace::getregs(pid);
-    println!("{:x?}", regs);
+    let regs = ptrace::getregs(pid).unwrap();
+    println!("r15: 0x{:016x?}", regs.r15);
+    println!("r14: 0x{:016x?}", regs.r14);
+    println!("r13: 0x{:016x?}", regs.r13);
+    println!("r12: 0x{:016x?}", regs.r12);
+    println!("r11: 0x{:016x?}", regs.r11);
+    println!("r10: 0x{:016x?}", regs.r10);
+    println!("r9 : 0x{:016x?}", regs.r9);
+    println!("r8 : 0x{:016x?}", regs.r8);
+    println!("rax: 0x{:016x?}", regs.rax);
+    println!("rbx: 0x{:016x?}", regs.rbx);
+    println!("rcx: 0x{:016x?}", regs.rcx);
+    println!("rdx: 0x{:016x?}", regs.rdx);
+    println!("rsi: 0x{:016x?}", regs.rsi);
+    println!("rdi: 0x{:016x?}", regs.rdi);
+    println!("rip: 0x{:016x?}", regs.rip);
+    println!("rsp: 0x{:016x?}", regs.rsp);
+    println!("rbp: 0x{:016x?}", regs.rbp);
+    println!("cs : 0x{:016x?}", regs.cs);
+    println!("ds : 0x{:016x?}", regs.ds);
+    println!("es : 0x{:016x?}", regs.es);
+    println!("fs : 0x{:016x?}", regs.fs);
+    println!("gs : 0x{:016x?}", regs.gs);
+    println!("ss : 0x{:016x?}", regs.ss);
+    println!("fs_base: 0x{:016x?}", regs.fs);
+    println!("gs_base: 0x{:016x?}", regs.gs);
+    println!("orig_rax: 0x{:016x?}", regs.orig_rax);
+    println!("eflags: 0x{:016x?}", regs.eflags);
 }
 
 pub fn symbols(debugger_info: &DebuggerInfo) {

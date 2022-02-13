@@ -118,7 +118,7 @@ impl Command {
                 println!("set breakpoint at 0x{:016x}", addr);
                 Ok(())
             }
-            StepInstruction => Ok(()),
+            StepInstruction => single_step(debugger_info),
             Continue => {
                 let ptrace_options =
                     ptrace::Options::from_bits(PTRACE_O_TRACEEXEC | PTRACE_O_TRACESYSGOOD).unwrap();
@@ -127,8 +127,7 @@ impl Command {
                 switch(status, debugger_info)
             }
             DumpRegisters => {
-                let regs = get_regs(debugger_info.child);
-                println!("{:x?}", regs);
+                dump::register(debugger_info.child);
                 Ok(())
             }
             ExamineMemory(addr, len) => {
@@ -230,6 +229,10 @@ fn still_alive() {
 
 fn stopped(pid: Pid, signal: Signal, debugger_info: &mut DebuggerInfo) {
     if signal == Signal::SIGTRAP {
+        if debugger_info.step_flag {
+            debugger_info.step_flag = false;
+            return;
+        }
         let regs = get_regs(pid);
         let addr = regs.rip - 1; // もしブレークポイントだったら0xCCより1byte次にいるはず
         if let Some(bp) = debugger_info.breakpoint_manager.get(addr) {
@@ -250,4 +253,17 @@ fn stopped(pid: Pid, signal: Signal, debugger_info: &mut DebuggerInfo) {
     if let Err(e) = ptrace::cont(pid, signal) {
         panic!("ptrace::cont failed: errno = {e}");
     }
+}
+
+fn single_step(debugger_info: &mut DebuggerInfo) -> Result<(), Box<dyn std::error::Error>> {
+    debugger_info.step_flag = true;
+    ptrace::step(debugger_info.child, None)?;
+    let wait_options =
+        WaitPidFlag::from_bits(WaitPidFlag::WCONTINUED.bits() | WaitPidFlag::WUNTRACED.bits());
+    let status = waitpid(debugger_info.child, wait_options).unwrap();
+
+    let rip = get_regs(debugger_info.child).rip;
+    println!("rip = 0x{:016x}", rip);
+
+    switch(status, debugger_info)
 }
