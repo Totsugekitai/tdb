@@ -6,20 +6,13 @@ use crate::{
     dump, mem,
     syscall::{get_regs, SyscallInfo, SyscallStack},
 };
-use nix::{
-    sys::{
-        ptrace,
-        wait::{waitpid, WaitPidFlag},
-    },
-    unistd::Pid,
-};
+use nix::{sys::ptrace, unistd::Pid};
 
 #[derive(Debug)]
 pub struct DebuggerInfo {
     pub syscall_stack: SyscallStack,
     pub breakpoint_manager: BreakpointManager,
     pub debug_info: TdbDebugInfo,
-    pub base_addr: u64,
     pub child: Pid,
     pub step_flag: bool,
 }
@@ -31,28 +24,16 @@ pub fn debugger_main(child: Pid, filename: &str) {
 
     // init
     crate::signal::init(child);
+    let mut syscall_stack = SyscallStack::new();
+    let breakpoint_manager = BreakpointManager::new(child);
+    let (debug_info, status) = TdbDebugInfo::init(filename, child, &mut syscall_stack);
     let mut debugger_info = DebuggerInfo {
-        syscall_stack: SyscallStack::new(),
-        breakpoint_manager: BreakpointManager::new(child),
-        debug_info: TdbDebugInfo::init(filename),
-        base_addr: 0,
+        syscall_stack,
+        breakpoint_manager,
+        debug_info,
         child,
         step_flag: false,
     };
-
-    let mut status;
-    loop {
-        let wait_options =
-            WaitPidFlag::from_bits(WaitPidFlag::WCONTINUED.bits() | WaitPidFlag::WUNTRACED.bits());
-        status = waitpid(child, wait_options).unwrap();
-
-        if let Ok(m) = mem::get_bottom_segment_info(child, filename) {
-            debugger_info.base_addr = m.start() as u64;
-            break;
-        } else {
-            catch_syscall(child, &mut debugger_info.syscall_stack);
-        }
-    }
 
     loop {
         let command = match Command::read(&debugger_info) {
@@ -67,7 +48,7 @@ pub fn debugger_main(child: Pid, filename: &str) {
     }
 }
 
-fn catch_syscall(pid: Pid, syscall_stack: &mut SyscallStack) {
+pub fn catch_syscall(pid: Pid, syscall_stack: &mut SyscallStack) {
     let syscall_info = SyscallInfo::from_regs(&get_regs(pid));
 
     if let Some(top) = syscall_stack.top() {

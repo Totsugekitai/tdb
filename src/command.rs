@@ -111,9 +111,15 @@ impl Command {
     ) -> Result<(), Box<dyn std::error::Error>> {
         use Command::*;
         match command {
-            Breakpoint(offset) => {
-                let base = debugger_info.base_addr;
-                let addr = base + offset;
+            Breakpoint(bin_offset) => {
+                let exec_map = debugger_info.debug_info.exec_map().unwrap();
+                // mapが実際にある仮想アドレス
+                let start = exec_map.start() as u64;
+                // バイナリファイルのどこからがこの領域にマップされているかを指し示す値
+                // addrの計算に必要
+                let offset = exec_map.offset as u64;
+                // ブレークポイントの実際のアドレス
+                let addr = start + (bin_offset - offset);
                 let _byte = debugger_info.breakpoint_manager.set(addr)?;
                 println!("set breakpoint at 0x{:016x}", addr);
                 Ok(())

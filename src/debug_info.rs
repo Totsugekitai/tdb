@@ -1,10 +1,16 @@
+use crate::{debugger::catch_syscall, mem, syscall::SyscallStack};
 #[allow(unused)]
 use gimli::{
     self,
     read::{AttributeValue, AttrsIter, DieReference, EvaluationResult},
     DebugLineOffset, Dwarf, EndianSlice, Reader, RunTimeEndian,
 };
+use nix::{
+    sys::wait::{waitpid, WaitPidFlag, WaitStatus},
+    unistd::Pid,
+};
 use object::{Object, ObjectSection, ObjectSymbol};
+use proc_maps::MapRange;
 use std::{
     borrow::{self, Cow},
     fs,
@@ -26,10 +32,11 @@ pub struct VariableInfo {
 pub struct TdbDebugInfo {
     pub fn_info_vec: Vec<FunctionInfo>,
     pub var_info_vec: Vec<VariableInfo>,
+    pub mmap_info_vec: Vec<MapRange>,
 }
 
 impl TdbDebugInfo {
-    pub fn init(filename: &str) -> Self {
+    pub fn init(filename: &str, pid: Pid, syscall_stack: &mut SyscallStack) -> (Self, WaitStatus) {
         let file = fs::File::open(filename).unwrap();
         let mmap = unsafe { memmap::Mmap::map(&file).unwrap() };
         let object = object::File::parse(&*mmap).unwrap();
@@ -40,10 +47,16 @@ impl TdbDebugInfo {
         Self::get_elf_fn_info(&object, &mut fn_info_vec);
         Self::get_elf_var_info(&object, &mut var_info_vec);
 
-        Self {
-            fn_info_vec,
-            var_info_vec,
-        }
+        let (mmap_info_vec, status) = Self::get_mmap_info_vec(pid, filename, syscall_stack);
+
+        (
+            Self {
+                fn_info_vec,
+                var_info_vec,
+                mmap_info_vec,
+            },
+            status,
+        )
     }
 
     pub fn get_breakpoint_offset(&self, bp_symbol_name: &str) -> Option<u64> {
@@ -75,6 +88,51 @@ impl TdbDebugInfo {
                 });
             }
         }
+    }
+
+    fn get_mmap_info_vec(
+        pid: Pid,
+        filename: &str,
+        syscall_stack: &mut SyscallStack,
+    ) -> (Vec<MapRange>, WaitStatus) {
+        loop {
+            let wait_options = WaitPidFlag::from_bits(
+                WaitPidFlag::WCONTINUED.bits() | WaitPidFlag::WUNTRACED.bits(),
+            );
+            let status = waitpid(pid, wait_options).unwrap();
+
+            if let Ok(m) = mem::get_mmap_info(pid, filename) {
+                return (m, status);
+            } else {
+                catch_syscall(pid, syscall_stack);
+            }
+        }
+    }
+
+    pub fn exec_map(&self) -> Result<&MapRange, Box<dyn std::error::Error>> {
+        for m in &self.mmap_info_vec {
+            if m.is_exec() {
+                return Ok(m);
+            }
+        }
+        use std::io;
+        Err(Box::new(io::Error::new(
+            io::ErrorKind::NotFound,
+            "exec map not found",
+        )))
+    }
+
+    pub fn data_map(&self) -> Result<&MapRange, Box<dyn std::error::Error>> {
+        for m in &self.mmap_info_vec {
+            if m.is_read() && !m.is_exec() {
+                return Ok(m);
+            }
+        }
+        use std::io;
+        Err(Box::new(io::Error::new(
+            io::ErrorKind::NotFound,
+            "exec map not found",
+        )))
     }
 
     // fn get_dwarf_fn_info<R: Reader<Offset = usize>>(

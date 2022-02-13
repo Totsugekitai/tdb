@@ -88,14 +88,28 @@ pub fn register(pid: Pid) {
 
 pub fn symbols(debugger_info: &DebuggerInfo) {
     println!("functions:");
+    let exec_map = debugger_info.debug_info.exec_map().unwrap();
     for f in &debugger_info.debug_info.fn_info_vec {
-        println!("0x{:016x}: {}", debugger_info.base_addr + f.offset, f.name);
+        let exec_map_offset = exec_map.offset as u64;
+        let addr = if f.offset >= exec_map_offset {
+            exec_map.start() as u64 + (f.offset - exec_map_offset)
+        } else {
+            f.offset
+        };
+        println!("0x{:016x}: {}", addr, f.name);
     }
 
     println!();
 
     println!("variables:");
+    let data_map = debugger_info.debug_info.data_map().unwrap();
     for v in &debugger_info.debug_info.var_info_vec {
-        println!("0x{:016x}: {}", v.offset, v.name);
+        let data_map_offset = data_map.offset as u64;
+        let addr = if v.offset >= data_map_offset {
+            exec_map.start() as u64 + (v.offset - data_map_offset)
+        } else {
+            v.offset
+        };
+        println!("0x{:016x}: {}", addr, v.name);
     }
 }
