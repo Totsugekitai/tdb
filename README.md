@@ -22,3 +22,4 @@
 ### その他
 
 - [Rustとgithub actionsでCI環境構築](https://zenn.dev/naokifujita/articles/c890954165c21f)
+- [Rust のデバッグチートシート](https://qiita.com/legokichi/items/e2f807f70316a916f4be)
