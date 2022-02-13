@@ -2,6 +2,7 @@ use crate::{
     debugger::DebuggerInfo,
     dump,
     syscall::{get_regs, SyscallInfo, SyscallStack},
+    util::parse_demical_or_hex,
 };
 use nix::{
     libc::{PTRACE_O_TRACEEXEC, PTRACE_O_TRACESYSGOOD},
@@ -69,30 +70,8 @@ impl Command {
             "continue" | "c" => Ok(Continue),
             "regs" => Ok(DumpRegisters),
             "examine" | "x" => {
-                let mut addr = 0;
-                let prefix = &buf_vec[1][0..=1];
-                if prefix == "0x" {
-                    let hex_str = &buf_vec[1][2..];
-                    let addr_decoded = hex::decode(hex_str)?;
-                    for (i, d) in addr_decoded.iter().enumerate() {
-                        addr += (*d as u64) << ((addr_decoded.len() - 1 - i) * 8);
-                    }
-                } else {
-                    addr = buf_vec[1].parse::<u64>()?;
-                }
-
-                let mut len = 0;
-                let prefix = &buf_vec[2][0..=1];
-                if prefix == "0x" {
-                    let hex_str = &buf_vec[2][2..];
-                    let len_decoded = hex::decode(hex_str)?;
-                    for (i, d) in len_decoded.iter().enumerate() {
-                        len += (*d as u64) << ((len_decoded.len() - 1 - i) * 8);
-                    }
-                } else {
-                    len = buf_vec[2].parse::<u64>()?;
-                }
-
+                let addr = parse_demical_or_hex(buf_vec[1])?;
+                let len = parse_demical_or_hex(buf_vec[2])?;
                 Ok(ExamineMemory(addr, len))
             }
             "mmap" => Ok(ExamineMemoryMap),
@@ -112,7 +91,8 @@ impl Command {
         use Command::*;
         match command {
             Breakpoint(bin_offset) => {
-                let exec_map = debugger_info.debug_info.exec_map().unwrap();
+                // とりあえずコードセグメントが1つだけのバイナリに対応
+                let exec_map = debugger_info.debug_info.exec_maps().unwrap()[0];
                 // mapが実際にある仮想アドレス
                 let start = exec_map.start() as u64;
                 // バイナリファイルのどこからがこの領域にマップされているかを指し示す値

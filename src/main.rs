@@ -8,6 +8,7 @@ mod mem;
 mod signal;
 mod syscall;
 mod target;
+mod util;
 
 use std::path::Path;
 

@@ -88,7 +88,7 @@ pub fn register(pid: Pid) {
 
 pub fn symbols(debugger_info: &DebuggerInfo) {
     println!("functions:");
-    let exec_map = debugger_info.debug_info.exec_map().unwrap();
+    let exec_map = debugger_info.debug_info.exec_maps().unwrap()[0]; // とりあえずコードセグメントが1つだけのバイナリに対応
     for f in &debugger_info.debug_info.fn_info_vec {
         let exec_map_offset = exec_map.offset as u64;
         let addr = if f.offset >= exec_map_offset {
@@ -102,14 +102,15 @@ pub fn symbols(debugger_info: &DebuggerInfo) {
     println!();
 
     println!("variables:");
-    let data_map = debugger_info.debug_info.data_map().unwrap();
+    let rodata_maps = debugger_info.debug_info.rodata_maps().unwrap();
     for v in &debugger_info.debug_info.var_info_vec {
-        let data_map_offset = data_map.offset as u64;
-        let addr = if v.offset >= data_map_offset {
-            exec_map.start() as u64 + (v.offset - data_map_offset)
-        } else {
-            v.offset
-        };
-        println!("0x{:016x}: {}", addr, v.name);
+        for rodata_map in &rodata_maps {
+            let base_addr = debugger_info.debug_info.base_addr;
+            if v.is_included(rodata_map, base_addr) {
+                let rodata_map_offset = rodata_map.offset as u64;
+                let addr = base_addr + v.offset - rodata_map_offset;
+                println!("0x{:016x}: {}", addr, v.name);
+            }
+        }
     }
 }

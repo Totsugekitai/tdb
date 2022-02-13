@@ -13,7 +13,7 @@ use object::{Object, ObjectSection, ObjectSymbol};
 use proc_maps::MapRange;
 use std::{
     borrow::{self, Cow},
-    fs,
+    fs, io,
 };
 
 #[derive(Debug, Clone)]
@@ -28,11 +28,28 @@ pub struct VariableInfo {
     pub offset: u64,
 }
 
+impl VariableInfo {
+    pub fn is_included(&self, map: &MapRange, base_addr: u64) -> bool {
+        let map_offset = map.offset as u64;
+        let map_size = map.size() as u64;
+        let map_start = map.start() as u64;
+
+        let base_diff = map_start - base_addr;
+        let var_offset = if self.offset > base_diff {
+            self.offset - base_diff
+        } else {
+            self.offset
+        };
+        (map_offset <= var_offset) && (var_offset < (map_offset + map_size))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TdbDebugInfo {
     pub fn_info_vec: Vec<FunctionInfo>,
     pub var_info_vec: Vec<VariableInfo>,
     pub mmap_info_vec: Vec<MapRange>,
+    pub base_addr: u64,
 }
 
 impl TdbDebugInfo {
@@ -49,11 +66,19 @@ impl TdbDebugInfo {
 
         let (mmap_info_vec, status) = Self::get_mmap_info_vec(pid, filename, syscall_stack);
 
+        let mut base_addr = u64::MAX;
+        for m in &mmap_info_vec {
+            if (m.start() as u64) < base_addr {
+                base_addr = m.start() as u64;
+            }
+        }
+
         (
             Self {
                 fn_info_vec,
                 var_info_vec,
                 mmap_info_vec,
+                base_addr,
             },
             status,
         )
@@ -109,30 +134,56 @@ impl TdbDebugInfo {
         }
     }
 
-    pub fn exec_map(&self) -> Result<&MapRange, Box<dyn std::error::Error>> {
+    pub fn exec_maps(&self) -> Result<Vec<&MapRange>, Box<dyn std::error::Error>> {
+        let mut exec_maps = Vec::new();
         for m in &self.mmap_info_vec {
-            if m.is_exec() {
-                return Ok(m);
+            if m.is_read() && !m.is_write() && m.is_exec() {
+                exec_maps.push(m);
             }
         }
-        use std::io;
-        Err(Box::new(io::Error::new(
-            io::ErrorKind::NotFound,
-            "exec map not found",
-        )))
+        if exec_maps.len() > 0 {
+            Ok(exec_maps)
+        } else {
+            Err(Box::new(io::Error::new(
+                io::ErrorKind::NotFound,
+                "exec map not found",
+            )))
+        }
     }
 
-    pub fn data_map(&self) -> Result<&MapRange, Box<dyn std::error::Error>> {
+    #[allow(unused)]
+    pub fn data_maps(&self) -> Result<Vec<&MapRange>, Box<dyn std::error::Error>> {
+        let mut data_maps = Vec::new();
         for m in &self.mmap_info_vec {
-            if m.is_read() && !m.is_exec() {
-                return Ok(m);
+            if m.is_read() && m.is_write() && !m.is_exec() {
+                data_maps.push(m);
             }
         }
-        use std::io;
-        Err(Box::new(io::Error::new(
-            io::ErrorKind::NotFound,
-            "exec map not found",
-        )))
+        if data_maps.len() > 0 {
+            Ok(data_maps)
+        } else {
+            Err(Box::new(io::Error::new(
+                io::ErrorKind::NotFound,
+                "exec map not found",
+            )))
+        }
+    }
+
+    pub fn rodata_maps(&self) -> Result<Vec<&MapRange>, Box<dyn std::error::Error>> {
+        let mut rodata_maps = Vec::new();
+        for m in &self.mmap_info_vec {
+            if m.is_read() && !m.is_write() && !m.is_exec() {
+                rodata_maps.push(m);
+            }
+        }
+        if rodata_maps.len() > 0 {
+            Ok(rodata_maps)
+        } else {
+            Err(Box::new(io::Error::new(
+                io::ErrorKind::NotFound,
+                "rodata map not found",
+            )))
+        }
     }
 
     // fn get_dwarf_fn_info<R: Reader<Offset = usize>>(
