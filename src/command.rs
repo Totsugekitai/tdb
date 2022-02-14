@@ -1,11 +1,11 @@
 use crate::{
-    debugger::{DebuggerInfo, Watchable},
+    debugger::{DebuggerInfo, WatchPoint},
     dump, mem, register,
     syscall::{get_regs, SyscallInfo, SyscallStack},
     util::parse_demical_or_hex,
 };
 use nix::{
-    libc::{c_void, PTRACE_O_TRACEEXEC, PTRACE_O_TRACESYSGOOD},
+    libc::c_void,
     sys::{
         ptrace,
         signal::Signal,
@@ -34,7 +34,7 @@ pub enum Command {
 
 #[derive(Debug, Clone)]
 pub enum WatchCommand {
-    Memory(mem::Address),
+    Memory(mem::Memory),
     Register(register::Register),
 }
 
@@ -45,7 +45,7 @@ pub enum WatchCommand {
 // }
 
 impl Command {
-    pub fn read(debugger_info: &DebuggerInfo) -> Result<Command, Box<dyn std::error::Error>> {
+    pub fn read(debugger_info: &mut DebuggerInfo) -> Result<Command, Box<dyn std::error::Error>> {
         let stdout = io::stdout();
         let mut out_handle = stdout.lock();
         out_handle.write_all(b"> ")?;
@@ -70,7 +70,10 @@ impl Command {
 
         use Command::*;
         match buf_vec[0] {
-            "stepi" | "si" => Ok(StepInstruction),
+            "stepi" | "si" => {
+                debugger_info.cont_flag = false;
+                Ok(StepInstruction)
+            }
             "break" | "b" => {
                 if buf_vec.len() == 2 {
                     let bp = buf_vec[1];
@@ -105,9 +108,16 @@ impl Command {
             "backtrace" | "bt" => Ok(Backtrace),
             "watch" | "w" => {
                 if let Ok(addr) = parse_demical_or_hex(buf_vec[1]) {
-                    Ok(Watch(WatchCommand::Memory(mem::Address(addr))))
-                } else if let Ok(reg) = crate::register::Register::parse(buf_vec[1]) {
-                    Ok(Watch(WatchCommand::Register(reg)))
+                    let value =
+                        ptrace::read(debugger_info.debug_info.target_pid, addr as *mut c_void)
+                            .unwrap() as u64;
+                    Ok(Watch(WatchCommand::Memory(mem::Memory { addr, value })))
+                } else if let Ok(reg_type) = register::RegisterType::parse(buf_vec[1]) {
+                    let value = reg_type.get_current_value(debugger_info.debug_info.target_pid);
+                    Ok(Watch(WatchCommand::Register(register::Register {
+                        reg_type,
+                        value,
+                    })))
                 } else {
                     Err(Box::new(Error::new(
                         ErrorKind::InvalidInput,
@@ -122,18 +132,21 @@ impl Command {
         }
     }
 
+    /// command execution
+    /// returns (wait status after command execution, additional command)
     pub fn exec(
         command: Command,
         debugger_info: &mut DebuggerInfo,
         status: WaitStatus,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(WaitStatus, Option<Command>), Box<dyn std::error::Error>> {
         use Command::*;
-        match command {
+        let status_and_additional_command = match command {
             Empty(prev_command) => {
                 if let Some(command) = *prev_command {
-                    return Self::exec(command, debugger_info, status);
+                    Self::exec(command, debugger_info, status).unwrap()
                 } else {
                     println!("command not found");
+                    (status, None)
                 }
             }
             Breakpoint(bin_offset) => {
@@ -149,30 +162,37 @@ impl Command {
                 let _byte = debugger_info.breakpoint_manager.set(addr)?;
                 println!("set breakpoint at 0x{:016x}", addr);
                 debugger_info.prev_command = Some(command);
+                (status, None)
             }
             StepInstruction => {
                 debugger_info.prev_command = Some(command);
-                return single_step(debugger_info);
+                let status = single_step(debugger_info).unwrap();
+                let regs = get_regs(debugger_info.debug_info.target_pid);
+                let rip = regs.rip;
+                if !debugger_info.cont_flag {
+                    println!("rip = 0x{:016x}", rip);
+                }
+                status
             }
             Continue => {
-                let ptrace_options =
-                    ptrace::Options::from_bits(PTRACE_O_TRACEEXEC | PTRACE_O_TRACESYSGOOD).unwrap();
-                ptrace::setoptions(debugger_info.debug_info.target_pid, ptrace_options)?;
+                debugger_info.cont_flag = true;
                 debugger_info.prev_command = Some(command);
-
-                return switch(status, debugger_info);
+                continue_run(status, debugger_info).unwrap()
             }
             DumpRegisters => {
                 dump::register(debugger_info.debug_info.target_pid);
                 debugger_info.prev_command = Some(command);
+                (status, None)
             }
             ExamineMemory(addr, len) => {
                 dump::memory(&debugger_info.debug_info, addr, len);
                 debugger_info.prev_command = Some(command);
+                (status, None)
             }
             ExamineMemoryMap => {
                 dump::memory_map(debugger_info.debug_info.target_pid);
                 debugger_info.prev_command = Some(command);
+                (status, None)
             }
             List(sub_commands) => {
                 if sub_commands.is_empty() {
@@ -189,49 +209,53 @@ impl Command {
                 }
                 let command = Command::List(sub_commands);
                 debugger_info.prev_command = Some(command);
+                (status, None)
             }
             Backtrace => {
                 dump::backtrace(&debugger_info.debug_info);
                 debugger_info.prev_command = Some(command);
+                (status, None)
             }
             Watch(watch_command) => match watch_command {
-                WatchCommand::Memory(addr) => {
-                    let init_value =
-                        ptrace::read(debugger_info.debug_info.target_pid, addr.0 as *mut c_void)
-                            .unwrap() as u64;
-                    debugger_info.set_watchpoint(Watchable::Address(addr), init_value);
+                WatchCommand::Memory(mem) => {
+                    debugger_info.set_watchpoint(WatchPoint::Memory(mem));
+                    (status, None)
                 }
                 WatchCommand::Register(reg) => {
-                    let init_value = reg.get_value(&debugger_info.debug_info);
-                    debugger_info.set_watchpoint(Watchable::Register(reg), init_value);
+                    debugger_info.set_watchpoint(WatchPoint::Register(reg));
+                    (status, None)
                 }
             },
-        }
-        Ok(())
+        };
+        Ok(status_and_additional_command)
     }
 }
 
-fn switch(
+fn switch_by_wait_status(
     status: WaitStatus,
     debugger_info: &mut DebuggerInfo,
-) -> Result<(), Box<dyn std::error::Error>> {
-    match status {
-        WaitStatus::Continued(pid) => continued(pid),
+) -> Result<(WaitStatus, Option<Command>), Box<dyn std::error::Error>> {
+    let status = match status {
+        WaitStatus::Continued(pid) => (continued(pid), None),
         WaitStatus::Exited(pid, exit_code) => exited(pid, exit_code),
-        WaitStatus::PtraceEvent(pid, signal, event) => ptrace_event(pid, signal, event),
-        WaitStatus::PtraceSyscall(pid) => ptrace_syscall(pid, &mut debugger_info.syscall_stack),
-        WaitStatus::Signaled(pid, signal, dump) => signaled(pid, signal, dump),
-        WaitStatus::StillAlive => still_alive(),
+        WaitStatus::PtraceEvent(pid, signal, event) => (ptrace_event(pid, signal, event), None),
+        WaitStatus::PtraceSyscall(pid) => {
+            (ptrace_syscall(pid, &mut debugger_info.syscall_stack), None)
+        }
+        WaitStatus::Signaled(pid, signal, dump) => (signaled(pid, signal, dump), None),
+        WaitStatus::StillAlive => (still_alive(debugger_info.debug_info.target_pid), None),
         WaitStatus::Stopped(pid, signal) => stopped(pid, signal, debugger_info),
-    }
-    Ok(())
+    };
+    Ok(status)
 }
 
-fn continued(pid: Pid) {
+fn continued(pid: Pid) -> WaitStatus {
     println!("continued: PID: {pid}");
     if let Err(e) = ptrace::cont(pid, None) {
         panic!("ptrace::cont failed: errno = {:?}", e);
     }
+
+    waitpid(pid, None).unwrap()
 }
 
 fn exited(pid: Pid, exit_code: i32) -> ! {
@@ -239,7 +263,7 @@ fn exited(pid: Pid, exit_code: i32) -> ! {
     exit(exit_code);
 }
 
-fn ptrace_event(pid: Pid, signal: Signal, event: i32) {
+fn ptrace_event(pid: Pid, signal: Signal, event: i32) -> WaitStatus {
     println!("evented: PID: {pid}, Signal: {:?}, Event: {event}", signal);
 
     let regs = ptrace::getregs(pid).unwrap();
@@ -248,9 +272,11 @@ fn ptrace_event(pid: Pid, signal: Signal, event: i32) {
     if let Err(e) = ptrace::cont(pid, signal) {
         panic!("ptrace::cont failed: errno = {:?}", e);
     }
+
+    waitpid(pid, None).unwrap()
 }
 
-fn ptrace_syscall(pid: Pid, syscall_stack: &mut SyscallStack) {
+fn ptrace_syscall(pid: Pid, syscall_stack: &mut SyscallStack) -> WaitStatus {
     let syscall_info = SyscallInfo::from_regs(&get_regs(pid));
 
     if let Some(top) = syscall_stack.top() {
@@ -279,137 +305,141 @@ fn ptrace_syscall(pid: Pid, syscall_stack: &mut SyscallStack) {
     if let Err(e) = ptrace::cont(pid, None) {
         panic!("ptrace::syscall failed: errno = {:?}", e);
     }
+
+    waitpid(pid, None).unwrap()
 }
 
-fn signaled(pid: Pid, signal: Signal, _core_dump: bool) {
+fn signaled(pid: Pid, signal: Signal, _core_dump: bool) -> WaitStatus {
     println!("signaled: PID: {pid}, Signal: {:?}", signal);
     if let Err(e) = ptrace::cont(pid, signal) {
         println!("ptrace::cont failed: errno = {e}");
     }
+    waitpid(pid, None).unwrap()
 }
 
-fn still_alive() {
+fn still_alive(pid: Pid) -> WaitStatus {
     println!("still alive");
+    if let Err(e) = ptrace::cont(pid, None) {
+        println!("ptrace::cont failed: errno = {e}");
+    }
+    waitpid(pid, None).unwrap()
 }
 
-fn stopped(pid: Pid, signal: Signal, debugger_info: &mut DebuggerInfo) {
+fn stopped(
+    pid: Pid,
+    signal: Signal,
+    debugger_info: &mut DebuggerInfo,
+) -> (WaitStatus, Option<Command>) {
     if signal == Signal::SIGTRAP {
-        if debugger_info.step_flag {
-            debugger_info.step_flag = false;
-            return;
-        }
         let regs = get_regs(pid);
         // もしブレークポイントだったら0xCCより1byte次にいるはず
         let addr = regs.rip - 1;
         // 上のアドレスがブレークポイントだったとき
         if let Some(bp) = debugger_info.breakpoint_manager.get(addr) {
             bp.restore_memory(pid, regs).unwrap();
+            return (
+                WaitStatus::Stopped(debugger_info.debug_info.target_pid, Signal::SIGTRAP),
+                None,
+            );
         }
         // ブレークポイントではなかったとき
         else {
-            // ウォッチポイントが仕掛けられていないときは普通にcont
+            // ウォッチポイントが仕掛けられていないときはcontしてもどる
             if debugger_info.watch_list.is_empty() {
                 if let Err(e) = ptrace::cont(pid, None) {
                     panic!("ptrace::cont failed: errno = {e}");
                 }
-                let wait_options = WaitPidFlag::from_bits(
-                    WaitPidFlag::WCONTINUED.bits() | WaitPidFlag::WUNTRACED.bits(),
-                );
-                let status = waitpid(pid, wait_options).unwrap();
-                switch(status, debugger_info).unwrap();
+                let status = waitpid(debugger_info.debug_info.target_pid, None).unwrap();
+                if status
+                    == WaitStatus::Stopped(debugger_info.debug_info.target_pid, Signal::SIGTRAP)
+                {
+                    return (status, Some(Command::Continue));
+                } else {
+                    return (status, None);
+                }
             }
-            // ウォッチポイントが仕掛けられているときはstep実行
+            // ウォッチポイントが仕掛けられているときはstepしてさらにStep Instruction Commandを発行
             else {
-                if let Err(e) = ptrace::step(pid, None) {
-                    panic!("ptrace::cont failed: errno = {e}");
-                }
-                let wait_options = WaitPidFlag::from_bits(
-                    WaitPidFlag::WCONTINUED.bits() | WaitPidFlag::WUNTRACED.bits(),
-                );
-                let status = waitpid(pid, wait_options).unwrap();
-
-                // ウォッチポイントを検査する
-                for (watchpoint, value) in debugger_info.watch_list.iter_mut() {
-                    match watchpoint {
-                        Watchable::Address(addr) => {
-                            let current_value = ptrace::read(
-                                debugger_info.debug_info.target_pid,
-                                addr.0 as *mut c_void,
-                            )
-                            .unwrap() as u64;
-                            if current_value != *value {
-                                println!(
-                                    "detect value change! 0x{:016x}: 0x{:x} -> 0x{:x}",
-                                    addr.0, value, current_value
-                                );
-                                *value = current_value;
-                                return;
-                            }
-                        }
-                        Watchable::Register(reg) => {
-                            let regs = get_regs(debugger_info.debug_info.target_pid);
-                            use register::Register;
-                            let current_value = match reg {
-                                Register::R15 => regs.r15,
-                                Register::R14 => regs.r14,
-                                Register::R13 => regs.r13,
-                                Register::R12 => regs.r12,
-                                Register::R11 => regs.r11,
-                                Register::R10 => regs.r10,
-                                Register::R9 => regs.r9,
-                                Register::R8 => regs.r8,
-                                Register::Rax => regs.rax,
-                                Register::Rbx => regs.rbx,
-                                Register::Rcx => regs.rcx,
-                                Register::Rdx => regs.rdx,
-                                Register::Rdi => regs.rdi,
-                                Register::Rsi => regs.rsi,
-                                Register::Rbp => regs.rbp,
-                                Register::Rsp => regs.rsp,
-                                Register::Rip => regs.rip,
-                                Register::Eflags => regs.eflags,
-                                Register::OrigRax => regs.orig_rax,
-                                Register::Cs => regs.cs,
-                                Register::Ds => regs.ds,
-                                Register::Es => regs.es,
-                                Register::Fs => regs.fs,
-                                Register::Gs => regs.gs,
-                                Register::Ss => regs.ss,
-                            };
-                            if current_value != *value {
-                                println!(
-                                    "detect value change! {:?}: 0x{:x} -> 0x{:x}",
-                                    reg, value, current_value
-                                );
-                                *value = current_value;
-                                return;
-                            }
-                        }
-                    }
-                }
-
-                switch(status, debugger_info).unwrap();
+                ptrace::step(debugger_info.debug_info.target_pid, None).unwrap();
+                let status = waitpid(debugger_info.debug_info.target_pid, None).unwrap();
+                debugger_info.cont_flag = true;
+                return (status, Some(Command::StepInstruction));
             }
         }
-        return;
     }
 
     if let Err(e) = ptrace::cont(pid, signal) {
         panic!("ptrace::cont failed: errno = {e}");
     }
+    (
+        waitpid(debugger_info.debug_info.target_pid, None).unwrap(),
+        None,
+    )
 }
 
-fn single_step(debugger_info: &mut DebuggerInfo) -> Result<(), Box<dyn std::error::Error>> {
-    debugger_info.step_flag = true;
+fn single_step(
+    debugger_info: &mut DebuggerInfo,
+) -> Result<(WaitStatus, Option<Command>), Box<dyn std::error::Error>> {
     ptrace::step(debugger_info.debug_info.target_pid, None)?;
     let wait_options =
         WaitPidFlag::from_bits(WaitPidFlag::WCONTINUED.bits() | WaitPidFlag::WUNTRACED.bits());
-    let status = waitpid(debugger_info.debug_info.target_pid, wait_options).unwrap();
 
+    let wait_status = waitpid(debugger_info.debug_info.target_pid, wait_options).unwrap();
+    // println!("{:?}", wait_status);
+
+    if !debugger_info.cont_flag {
+        return Ok((
+            WaitStatus::Stopped(debugger_info.debug_info.target_pid, Signal::SIGTRAP),
+            None,
+        ));
+    }
+
+    if let WaitStatus::Exited(_pid, code) = wait_status {
+        exit(code);
+    }
     let regs = get_regs(debugger_info.debug_info.target_pid);
-    if !debugger_info.watch_list.is_empty() {}
-    let rip = regs.rip;
-    println!("rip = 0x{:016x}", rip);
+    // もしブレークポイントだったら0xCCより1byte次にいるはず
+    let addr = regs.rip - 1;
+    // 上のアドレスがブレークポイントだったとき
+    if let Some(bp) = debugger_info.breakpoint_manager.get(addr) {
+        bp.restore_memory(debugger_info.debug_info.target_pid, regs)
+            .unwrap();
+        debugger_info.cont_flag = false;
+        return Ok((
+            WaitStatus::Stopped(debugger_info.debug_info.target_pid, Signal::SIGTRAP),
+            None,
+        ));
+    }
+    // ブレークポイントではなかったとき
+    else {
+        // ウォッチポイントが仕掛けられていないときはcontしてもどる
+        if debugger_info.watch_list.is_empty() {
+            debugger_info.cont_flag = false;
+            if let Err(e) = ptrace::cont(debugger_info.debug_info.target_pid, None) {
+                panic!("ptrace::cont failed: errno = {e}");
+            }
+            let status = waitpid(debugger_info.debug_info.target_pid, None).unwrap();
+            if status == WaitStatus::Stopped(debugger_info.debug_info.target_pid, Signal::SIGTRAP) {
+                return Ok((status, Some(Command::Continue)));
+            } else {
+                return Ok((status, None));
+            }
+        }
+        // ウォッチポイントが仕掛けられているときはstepしてさらにStep Instruction Commandを発行
+        else {
+            debugger_info.cont_flag = true;
+            ptrace::step(debugger_info.debug_info.target_pid, None).unwrap();
+            let status = waitpid(debugger_info.debug_info.target_pid, None).unwrap();
+            return Ok((status, Some(Command::StepInstruction)));
+        }
+    }
+}
 
-    switch(status, debugger_info)
+fn continue_run(
+    status: WaitStatus,
+    debugger_info: &mut DebuggerInfo,
+) -> Result<(WaitStatus, Option<Command>), Box<dyn std::error::Error>> {
+    debugger_info.cont_flag = true;
+    let wait_status = switch_by_wait_status(status, debugger_info).unwrap();
+    Ok(wait_status)
 }

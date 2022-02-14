@@ -27,4 +27,7 @@ pub fn get_mmap_info(pid: Pid, filename: &str) -> Result<Vec<MapRange>, io::Erro
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Address(pub u64);
+pub struct Memory {
+    pub addr: u64,
+    pub value: u64,
+}

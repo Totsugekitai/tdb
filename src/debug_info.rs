@@ -237,27 +237,14 @@ impl TdbDebugInfo {
                 RelocationTarget::Symbol(idx) => {
                     if let Some(sym) = Self::find_target_symbol_from_index(idx, &mut fn_info_vec) {
                         sym.set_addend(reloc.addend());
-                        println!("RelocationTarget::Symbol({:?})", idx);
-                        println!("symbol address: {:x}", sym.address());
-                        println!("addend: {:x}", sym.addend().unwrap());
-                        println!("apply_for: {:x}", apply_for);
                     }
                     if let Some(sym) = Self::find_target_symbol_from_index(idx, &mut var_info_vec) {
                         sym.set_addend(reloc.addend());
-                        println!("RelocationTarget::Symbol({:?})", idx);
-                        println!("symbol address: {:x}", sym.address());
-                        println!("addend: {:x}", sym.addend().unwrap());
-                        println!("apply_for: {:x}", apply_for);
                     }
                     if let Some(sym) =
                         Self::find_target_symbol_from_index(idx, &mut misc_symbol_vec)
                     {
                         sym.set_addend(reloc.addend());
-                        println!("RelocationTarget::Symbol({:?})", idx);
-                        println!("symbol name: {}", &sym.name());
-                        println!("symbol address: {:x}", sym.address());
-                        println!("addend: {:x}", sym.addend().unwrap());
-                        println!("apply_for: {:x}", apply_for);
                     }
                 }
                 RelocationTarget::Section(_idx) => {}

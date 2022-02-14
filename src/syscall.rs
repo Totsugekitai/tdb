@@ -77,5 +77,12 @@ impl SyscallStack {
 }
 
 pub fn get_regs(pid: Pid) -> user_regs_struct {
-    ptrace::getregs(pid).unwrap()
+    for i in 0..100 {
+        let maybe_reg = ptrace::getregs(pid);
+        match maybe_reg {
+            Ok(reg) => return reg,
+            Err(_) => continue,
+        }
+    }
+    panic!("failed to get_regs");
 }

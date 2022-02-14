@@ -1,9 +1,9 @@
+use crate::syscall::get_regs;
+use nix::unistd::Pid;
 use std::io;
 
-use crate::{debug_info::TdbDebugInfo, syscall::get_regs};
-
-#[derive(Debug, Clone)]
-pub enum Register {
+#[derive(Debug, Clone, Copy)]
+pub enum RegisterType {
     R15,
     R14,
     R13,
@@ -31,8 +31,8 @@ pub enum Register {
     Ss,
 }
 
-impl Register {
-    pub fn parse(s: &str) -> Result<Register, Box<dyn std::error::Error>> {
+impl RegisterType {
+    pub fn parse(s: &str) -> Result<RegisterType, Box<dyn std::error::Error>> {
         if s.is_empty() {
             return Err(Box::new(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -47,32 +47,32 @@ impl Register {
             )));
         }
         let reg = bytes[1..].iter().map(|c| *c as char).collect::<String>();
-        let reg = match reg.as_str() {
-            "r15" => Register::R15,
-            "r14" => Register::R14,
-            "r13" => Register::R13,
-            "r12" => Register::R12,
-            "r11" => Register::R11,
-            "r10" => Register::R10,
-            "r9" => Register::R9,
-            "r8" => Register::R8,
-            "rax" => Register::Rax,
-            "rbx" => Register::Rbx,
-            "rcx" => Register::Rcx,
-            "rdx" => Register::Rdx,
-            "rsi" => Register::Rsi,
-            "rdi" => Register::Rdi,
-            "rbp" => Register::Rbp,
-            "rsp" => Register::Rsp,
-            "rip" => Register::Rip,
-            "eflags" => Register::Eflags,
-            "orig_rax" => Register::OrigRax,
-            "cs" => Register::Cs,
-            "ds" => Register::Ds,
-            "es" => Register::Es,
-            "fs" => Register::Fs,
-            "gs" => Register::Gs,
-            "ss" => Register::Ss,
+        let reg_type = match reg.as_str() {
+            "r15" => RegisterType::R15,
+            "r14" => RegisterType::R14,
+            "r13" => RegisterType::R13,
+            "r12" => RegisterType::R12,
+            "r11" => RegisterType::R11,
+            "r10" => RegisterType::R10,
+            "r9" => RegisterType::R9,
+            "r8" => RegisterType::R8,
+            "rax" => RegisterType::Rax,
+            "rbx" => RegisterType::Rbx,
+            "rcx" => RegisterType::Rcx,
+            "rdx" => RegisterType::Rdx,
+            "rsi" => RegisterType::Rsi,
+            "rdi" => RegisterType::Rdi,
+            "rbp" => RegisterType::Rbp,
+            "rsp" => RegisterType::Rsp,
+            "rip" => RegisterType::Rip,
+            "eflags" => RegisterType::Eflags,
+            "orig_rax" => RegisterType::OrigRax,
+            "cs" => RegisterType::Cs,
+            "ds" => RegisterType::Ds,
+            "es" => RegisterType::Es,
+            "fs" => RegisterType::Fs,
+            "gs" => RegisterType::Gs,
+            "ss" => RegisterType::Ss,
             _ => {
                 return Err(Box::new(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -80,37 +80,43 @@ impl Register {
                 )))
             }
         };
-        Ok(reg)
+        Ok(reg_type)
     }
 
-    pub fn get_value(&self, debug_info: &TdbDebugInfo) -> u64 {
-        let regs = get_regs(debug_info.target_pid);
+    pub fn get_current_value(&self, pid: Pid) -> u64 {
+        let regs = get_regs(pid);
         match self {
-            Register::R15 => regs.r15,
-            Register::R14 => regs.r14,
-            Register::R13 => regs.r13,
-            Register::R12 => regs.r12,
-            Register::R11 => regs.r11,
-            Register::R10 => regs.r10,
-            Register::R9 => regs.r9,
-            Register::R8 => regs.r8,
-            Register::Rax => regs.rax,
-            Register::Rbx => regs.rbx,
-            Register::Rcx => regs.rcx,
-            Register::Rdx => regs.rdx,
-            Register::Rdi => regs.rdi,
-            Register::Rsi => regs.rsi,
-            Register::Rbp => regs.rbp,
-            Register::Rsp => regs.rsp,
-            Register::Rip => regs.rip,
-            Register::Eflags => regs.eflags,
-            Register::OrigRax => regs.orig_rax,
-            Register::Cs => regs.cs,
-            Register::Ds => regs.ds,
-            Register::Es => regs.es,
-            Register::Fs => regs.fs,
-            Register::Gs => regs.gs,
-            Register::Ss => regs.ss,
+            RegisterType::R15 => regs.r15,
+            RegisterType::R14 => regs.r14,
+            RegisterType::R13 => regs.r13,
+            RegisterType::R12 => regs.r12,
+            RegisterType::R11 => regs.r11,
+            RegisterType::R10 => regs.r10,
+            RegisterType::R9 => regs.r9,
+            RegisterType::R8 => regs.r8,
+            RegisterType::Rax => regs.rax,
+            RegisterType::Rbx => regs.rbx,
+            RegisterType::Rcx => regs.rcx,
+            RegisterType::Rdx => regs.rdx,
+            RegisterType::Rdi => regs.rdi,
+            RegisterType::Rsi => regs.rsi,
+            RegisterType::Rbp => regs.rbp,
+            RegisterType::Rsp => regs.rsp,
+            RegisterType::Rip => regs.rip,
+            RegisterType::Eflags => regs.eflags,
+            RegisterType::OrigRax => regs.orig_rax,
+            RegisterType::Cs => regs.cs,
+            RegisterType::Ds => regs.ds,
+            RegisterType::Es => regs.es,
+            RegisterType::Fs => regs.fs,
+            RegisterType::Gs => regs.gs,
+            RegisterType::Ss => regs.ss,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Register {
+    pub reg_type: RegisterType,
+    pub value: u64,
 }

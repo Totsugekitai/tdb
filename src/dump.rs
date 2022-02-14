@@ -216,6 +216,6 @@ fn backtrace_inner(debug_info: &TdbDebugInfo, rbp: u64) -> Result<(), Box<dyn st
 
 pub fn watchpoints(debugger_info: &DebuggerInfo) {
     for w in &debugger_info.watch_list {
-        println!("{:016x?}", w.0);
+        println!("{:016x?}", w);
     }
 }

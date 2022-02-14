@@ -8,7 +8,8 @@ use crate::{
     dump, mem, register,
     syscall::{get_regs, SyscallInfo, SyscallStack},
 };
-use nix::{sys::ptrace, unistd::Pid};
+use nix::{libc::c_void, sys::ptrace, unistd::Pid};
+use std::process::exit;
 
 #[derive(Debug)]
 pub struct DebuggerInfo {
@@ -16,20 +17,64 @@ pub struct DebuggerInfo {
     pub breakpoint_manager: BreakpointManager,
     pub debug_info: TdbDebugInfo,
     pub prev_command: Option<crate::command::Command>,
-    pub watch_list: Vec<(Watchable, u64)>,
-    pub step_flag: bool,
+    pub watch_list: Vec<WatchPoint>,
+    pub cont_flag: bool,
 }
 
 impl DebuggerInfo {
-    pub fn set_watchpoint(&mut self, watchpoint: Watchable, init_value: u64) {
-        self.watch_list.push((watchpoint, init_value));
+    pub fn set_watchpoint(&mut self, watchpoint: WatchPoint) {
+        self.watch_list.push(watchpoint);
     }
 }
 
 #[derive(Debug)]
-pub enum Watchable {
-    Address(mem::Address),
+pub enum WatchPoint {
+    Memory(mem::Memory),
     Register(register::Register),
+}
+
+impl WatchPoint {
+    fn get_value(&self) -> u64 {
+        match self {
+            &Self::Memory(m) => m.value,
+            &Self::Register(r) => r.value,
+        }
+    }
+
+    fn update_value(&mut self, value: u64) -> u64 {
+        match self {
+            Self::Memory(mem) => {
+                let old = mem.value;
+                mem.value = value;
+                old
+            }
+            Self::Register(reg) => {
+                let old = reg.value;
+                reg.value = value;
+                old
+            }
+        }
+    }
+
+    fn is_changed(&self, pid: Pid) -> bool {
+        match self {
+            &Self::Memory(mem) => {
+                let read = ptrace::read(pid, mem.addr as *mut c_void).unwrap() as u64;
+                mem.value != read
+            }
+            &Self::Register(reg) => {
+                let read = reg.reg_type.get_current_value(pid);
+                reg.value != read
+            }
+        }
+    }
+
+    fn fetch_new_value(&self, pid: Pid) -> u64 {
+        match self {
+            &Self::Memory(mem) => ptrace::read(pid, mem.addr as *mut c_void).unwrap() as u64,
+            &Self::Register(reg) => reg.reg_type.get_current_value(pid),
+        }
+    }
 }
 
 pub fn debugger_main(child: Pid, filename: &str) {
@@ -48,19 +93,62 @@ pub fn debugger_main(child: Pid, filename: &str) {
         debug_info,
         watch_list: Vec::new(),
         prev_command: None,
-        step_flag: false,
+        cont_flag: false,
     };
 
+    let mut status = status;
+    let mut additional_command = None;
     loop {
-        let command = match Command::read(&debugger_info) {
-            Ok(command) => command,
-            Err(e) => {
-                println!("{e}");
-                continue;
+        if let Some(command) = additional_command {
+            let exec_return = Command::exec(command, &mut debugger_info, status);
+            match exec_return {
+                Ok(exec_return) => {
+                    status = exec_return.0;
+                    additional_command = exec_return.1;
+                }
+                Err(e) => {
+                    println!("{:?}", e);
+                    exit(0);
+                }
             }
-        };
+        } else {
+            let command = match Command::read(&mut debugger_info) {
+                Ok(command) => command,
+                Err(e) => {
+                    println!("{e}");
+                    continue;
+                }
+            };
 
-        Command::exec(command, &mut debugger_info, status).unwrap();
+            let exec_return = Command::exec(command, &mut debugger_info, status);
+            match exec_return {
+                Ok(exec_return) => {
+                    status = exec_return.0;
+                    additional_command = exec_return.1;
+                }
+                Err(e) => {
+                    println!("{:?}", e);
+                    exit(0);
+                }
+            }
+        }
+        // ウォッチポイントのチェック
+        check_watchpoints(&mut debugger_info, &mut additional_command);
+    }
+}
+
+pub fn check_watchpoints(
+    debugger_info: &mut DebuggerInfo,
+    additional_command: &mut Option<Command>,
+) {
+    for w in &mut debugger_info.watch_list {
+        if w.is_changed(debugger_info.debug_info.target_pid) {
+            debugger_info.cont_flag = false;
+            *additional_command = None;
+            let new = w.fetch_new_value(debugger_info.debug_info.target_pid);
+            let old = w.update_value(new);
+            println!("{:x?}: 0x{:x} -> 0x{:x}", w, old, w.get_value());
+        }
     }
 }
 
