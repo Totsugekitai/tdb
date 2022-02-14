@@ -1,6 +1,6 @@
 #![allow(unused)]
 use crate::{
-    debug_info::{SymbolTrait, TdbDebugInfo},
+    debug_info::{SymbolTrait, TdbDebugInfo, TdbMapRangeTrait},
     debugger::DebuggerInfo,
     syscall::get_regs,
 };
@@ -32,34 +32,46 @@ pub fn memory_map(pid: Pid) {
 
 const LONG_SIZE: u64 = 8;
 
-pub fn memory(pid: Pid, addr: u64, len: u64) {
+pub fn memory(debug_info: &TdbDebugInfo, addr: u64, len: u64) {
     let num = if (len % LONG_SIZE) == 0 {
         len / LONG_SIZE
     } else {
         len / LONG_SIZE + 1
     };
-    for i in 0..num {
-        print!("0x{:016x}  ", addr + i * 8);
-
-        let memdump = ptrace::read(pid, (addr + i * LONG_SIZE) as *mut c_void).unwrap();
-        let memvec = memdump.to_le_bytes();
-        for m in memvec {
-            print!("{:02x} ", m);
+    'outer: for i in 0..num {
+        let actual_addr = addr + i * LONG_SIZE;
+        for map in &debug_info.mmap_info_vec {
+            if map.is_included(actual_addr) {
+                memory_inner(debug_info, actual_addr);
+                continue 'outer;
+            }
         }
-
-        print!(" |");
-        for m in memvec {
-            let c = if m.is_ascii() && (0x20 < m) && (m < 0x7f) {
-                m
-            } else {
-                b'.'
-            };
-            print!("{}", c as char);
-        }
-        print!("|");
-
-        println!();
+        println!("out of memory map, memory dump interrupted.");
+        break;
     }
+}
+
+fn memory_inner(debug_info: &TdbDebugInfo, actual_addr: u64) {
+    print!("0x{:016x}  ", actual_addr);
+
+    let memdump = ptrace::read(debug_info.target_pid, actual_addr as *mut c_void).unwrap();
+    let memvec = memdump.to_le_bytes();
+    for m in memvec {
+        print!("{:02x} ", m);
+    }
+
+    print!(" |");
+    for m in memvec {
+        let c = if m.is_ascii() && (0x20 < m) && (m < 0x7f) {
+            m
+        } else {
+            b'.'
+        };
+        print!("{}", c as char);
+    }
+    print!("|");
+
+    println!();
 }
 
 pub fn register(pid: Pid) {
@@ -108,10 +120,10 @@ pub fn functions(debugger_info: &DebuggerInfo) {
     let mut f_vec = Vec::new();
     for f in &debugger_info.debug_info.fn_info_vec {
         let exec_map_offset = exec_map.offset as u64;
-        let addr = if f.offset() >= exec_map_offset {
-            exec_map.start() as u64 + (f.offset() - exec_map_offset)
+        let addr = if f.address() >= exec_map_offset {
+            exec_map.start() as u64 + (f.address() - exec_map_offset)
         } else {
-            f.offset()
+            f.address()
         };
         f_vec.push((addr, f.name()));
     }
@@ -130,11 +142,11 @@ pub fn variables(debugger_info: &DebuggerInfo) {
         for v in &debugger_info.debug_info.var_info_vec {
             let rodata_map_offset = rodata_map.offset as u64;
             if v.is_included(rodata_map, base_addr) {
-                let addr = if v.offset() > base_diff {
-                    let var_offset = v.offset() - base_diff;
+                let addr = if v.address() > base_diff {
+                    let var_offset = v.address() - base_diff;
                     base_addr + var_offset
                 } else {
-                    v.offset()
+                    v.address()
                 };
             }
         }
@@ -146,11 +158,11 @@ pub fn variables(debugger_info: &DebuggerInfo) {
         for v in &debugger_info.debug_info.var_info_vec {
             let data_map_offset = data_map.offset as u64;
             if v.is_included(data_map, base_addr) {
-                let addr = if v.offset() > base_diff {
-                    let var_offset = v.offset() - base_diff;
+                let addr = if v.address() > base_diff {
+                    let var_offset = v.address() - base_diff;
                     base_addr + var_offset
                 } else {
-                    v.offset()
+                    v.address()
                 };
             }
         }
@@ -164,6 +176,12 @@ pub fn variables(debugger_info: &DebuggerInfo) {
         } else {
             println!("0x{:016x}: {}", 0, name);
         }
+    }
+}
+
+pub fn misc_symbols(debug_info: &TdbDebugInfo) {
+    for misc in &debug_info.misc_symbol_vec {
+        println!("{:x?}", misc);
     }
 }
 
@@ -181,15 +199,23 @@ fn backtrace_inner(debug_info: &TdbDebugInfo, rbp: u64) -> Result<(), Box<dyn st
     let prev_frame_addr = ptrace::read(debug_info.target_pid, rbp as *mut c_void)? as u64;
     let return_addr = ptrace::read(debug_info.target_pid, (rbp + 8) as *mut c_void)? as u64;
     if let Some(f) = debug_info.find_function_in(return_addr) {
-        backtrace_inner(debug_info, prev_frame_addr)?;
-        println!("0x{:016x} in {}", return_addr, f.name());
-    } else {
-        let regs = get_regs(debug_info.target_pid);
-        let rsp = regs.rsp;
-        let return_addr = ptrace::read(debug_info.target_pid, rsp as *mut c_void)? as u64;
-        if let Some(f) = debug_info.find_function_in(return_addr) {
-            println!("0x{:016x} in {}", return_addr, f.name());
+        // このコードブロックは、関数突入直後のスタックフレームが構築される前でも関数を表示したいために入れている
+        {
+            let rsp = get_regs(debug_info.target_pid).rsp;
+            let tmp_frame_addr = ptrace::read(debug_info.target_pid, rsp as *mut c_void)? as u64;
+            if let Some(f) = debug_info.find_function_in(tmp_frame_addr) {
+                println!("0x{:016x} in {}", tmp_frame_addr, f.name());
+            }
         }
+
+        println!("0x{:016x} in {}", return_addr, f.name());
+        backtrace_inner(debug_info, prev_frame_addr)?;
     }
     Ok(())
+}
+
+pub fn watchpoints(debugger_info: &DebuggerInfo) {
+    for w in &debugger_info.watch_list {
+        println!("{:016x?}", w.0);
+    }
 }

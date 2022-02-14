@@ -25,3 +25,6 @@ pub fn get_mmap_info(pid: Pid, filename: &str) -> Result<Vec<MapRange>, io::Erro
         Err(io::Error::new(io::ErrorKind::NotFound, "process not found"))
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct Address(pub u64);

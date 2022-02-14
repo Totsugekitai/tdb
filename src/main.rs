@@ -5,6 +5,7 @@ mod debug_info;
 mod debugger;
 mod dump;
 mod mem;
+mod register;
 mod signal;
 mod syscall;
 mod target;

@@ -9,7 +9,9 @@ use nix::{
     sys::wait::{waitpid, WaitPidFlag, WaitStatus},
     unistd::Pid,
 };
-use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget, SymbolIndex, SymbolScope};
+use object::{
+    Object, ObjectSection, ObjectSymbol, RelocationTarget, SymbolIndex, SymbolKind, SymbolScope,
+};
 use proc_maps::MapRange;
 use std::{
     borrow::{self, Cow},
@@ -21,7 +23,7 @@ use symbolic::{
 };
 
 pub trait SymbolTrait {
-    fn offset(&self) -> u64;
+    fn address(&self) -> u64;
     fn name(&self) -> &str;
     fn size(&self) -> u64;
     fn scope(&self) -> SymbolScope;
@@ -32,7 +34,7 @@ pub trait SymbolTrait {
 
 #[derive(Debug, Clone)]
 pub struct FunctionInfo {
-    offset: u64,
+    address: u64,
     addend: Option<i64>,
     name: String,
     size: u64,
@@ -41,8 +43,8 @@ pub struct FunctionInfo {
 }
 
 impl SymbolTrait for FunctionInfo {
-    fn offset(&self) -> u64 {
-        self.offset
+    fn address(&self) -> u64 {
+        self.address
     }
 
     fn name(&self) -> &str {
@@ -72,7 +74,7 @@ impl SymbolTrait for FunctionInfo {
 
 #[derive(Debug, Clone)]
 pub struct VariableInfo {
-    offset: u64,
+    address: u64,
     addend: Option<i64>,
     name: String,
     size: u64,
@@ -81,8 +83,8 @@ pub struct VariableInfo {
 }
 
 impl SymbolTrait for VariableInfo {
-    fn offset(&self) -> u64 {
-        self.offset
+    fn address(&self) -> u64 {
+        self.address
     }
 
     fn name(&self) -> &str {
@@ -117,12 +119,63 @@ impl VariableInfo {
         let map_start = map.start() as u64;
 
         let base_diff = map_start - base_addr;
-        let var_offset = if self.offset > base_diff {
-            self.offset - base_diff + map_offset
+        let var_offset = if self.address > base_diff {
+            self.address - base_diff + map_offset
         } else {
-            self.offset
+            self.address
         };
         (map_offset <= var_offset) && (var_offset < (map_offset + map_size))
+    }
+}
+
+pub trait MiscSymbolTrait {
+    fn kind(&self) -> SymbolKind;
+}
+
+#[derive(Debug, Clone)]
+pub struct MiscSymbol {
+    address: u64,
+    name: String,
+    size: u64,
+    scope: SymbolScope,
+    symbol_index: SymbolIndex,
+    addend: Option<i64>,
+    kind: SymbolKind,
+}
+
+impl SymbolTrait for MiscSymbol {
+    fn address(&self) -> u64 {
+        self.address
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn size(&self) -> u64 {
+        self.size
+    }
+
+    fn scope(&self) -> SymbolScope {
+        self.scope
+    }
+
+    fn symbol_index(&self) -> SymbolIndex {
+        self.symbol_index
+    }
+
+    fn addend(&self) -> Option<i64> {
+        self.addend
+    }
+
+    fn set_addend(&mut self, addend: i64) {
+        self.addend = Some(addend)
+    }
+}
+
+impl MiscSymbolTrait for MiscSymbol {
+    fn kind(&self) -> SymbolKind {
+        self.kind
     }
 }
 
@@ -131,9 +184,22 @@ pub struct TdbDebugInfo {
     pub filename: String,
     pub fn_info_vec: Vec<FunctionInfo>,
     pub var_info_vec: Vec<VariableInfo>,
+    pub misc_symbol_vec: Vec<MiscSymbol>,
     pub mmap_info_vec: Vec<MapRange>,
     pub base_addr: u64,
     pub target_pid: Pid,
+}
+
+pub trait TdbMapRangeTrait {
+    fn is_included(&self, actual_addr: u64) -> bool;
+}
+
+impl TdbMapRangeTrait for MapRange {
+    fn is_included(&self, actual_addr: u64) -> bool {
+        let start = self.start() as u64;
+        let size = self.size() as u64;
+        (start <= actual_addr) && (actual_addr < start + size)
+    }
 }
 
 impl TdbDebugInfo {
@@ -142,11 +208,9 @@ impl TdbDebugInfo {
         let mmap = unsafe { memmap::Mmap::map(&file).unwrap() };
         let object = object::File::parse(&*mmap).unwrap();
 
-        let mut fn_info_vec = Vec::new();
-        let mut var_info_vec = Vec::new();
-
-        Self::get_elf_fn_info(&object, &mut fn_info_vec);
-        Self::get_elf_var_info(&object, &mut var_info_vec);
+        let mut fn_info_vec = Self::get_elf_fn_info(&object);
+        let mut var_info_vec = Self::get_elf_var_info(&object);
+        let mut misc_symbol_vec = Self::get_misc_symbol_info(&object);
 
         let (mmap_info_vec, status) = Self::get_mmap_info_vec(pid, filename, syscall_stack);
 
@@ -158,16 +222,48 @@ impl TdbDebugInfo {
         }
 
         let mut reloc_info_vec = Vec::new();
-        for r in object.dynamic_relocations().unwrap() {
-            if r.1.target() == RelocationTarget::Absolute {
-                let target_symbol_value = r.0;
-                let target_symbol =
-                    Self::find_target_symbol_from_rel_info(target_symbol_value, &mut var_info_vec);
-                if let Some(sym) = target_symbol {
-                    sym.set_addend(r.1.addend());
+        for (apply_for, reloc) in object.dynamic_relocations().unwrap() {
+            match reloc.target() {
+                RelocationTarget::Absolute => {
+                    let target_symbol_value = apply_for;
+                    let target_symbol = Self::find_target_symbol_from_rel_info(
+                        target_symbol_value,
+                        &mut var_info_vec,
+                    );
+                    if let Some(sym) = target_symbol {
+                        sym.set_addend(reloc.addend());
+                    }
                 }
+                RelocationTarget::Symbol(idx) => {
+                    if let Some(sym) = Self::find_target_symbol_from_index(idx, &mut fn_info_vec) {
+                        sym.set_addend(reloc.addend());
+                        println!("RelocationTarget::Symbol({:?})", idx);
+                        println!("symbol address: {:x}", sym.address());
+                        println!("addend: {:x}", sym.addend().unwrap());
+                        println!("apply_for: {:x}", apply_for);
+                    }
+                    if let Some(sym) = Self::find_target_symbol_from_index(idx, &mut var_info_vec) {
+                        sym.set_addend(reloc.addend());
+                        println!("RelocationTarget::Symbol({:?})", idx);
+                        println!("symbol address: {:x}", sym.address());
+                        println!("addend: {:x}", sym.addend().unwrap());
+                        println!("apply_for: {:x}", apply_for);
+                    }
+                    if let Some(sym) =
+                        Self::find_target_symbol_from_index(idx, &mut misc_symbol_vec)
+                    {
+                        sym.set_addend(reloc.addend());
+                        println!("RelocationTarget::Symbol({:?})", idx);
+                        println!("symbol name: {}", &sym.name());
+                        println!("symbol address: {:x}", sym.address());
+                        println!("addend: {:x}", sym.addend().unwrap());
+                        println!("apply_for: {:x}", apply_for);
+                    }
+                }
+                RelocationTarget::Section(_idx) => {}
+                _ => panic!("Invalid RelocationTarget"),
             }
-            reloc_info_vec.push(r);
+            reloc_info_vec.push((apply_for, reloc));
         }
 
         (
@@ -175,6 +271,7 @@ impl TdbDebugInfo {
                 filename: filename.to_string(),
                 fn_info_vec,
                 var_info_vec,
+                misc_symbol_vec,
                 mmap_info_vec,
                 base_addr,
                 target_pid: pid,
@@ -186,20 +283,21 @@ impl TdbDebugInfo {
     pub fn get_breakpoint_offset(&self, bp_symbol_name: &str) -> Option<u64> {
         for f in &self.fn_info_vec {
             if f.name == bp_symbol_name {
-                return Some(f.offset);
+                return Some(f.address);
             }
         }
         None
     }
 
-    fn get_elf_fn_info<'a>(object: &'a object::File, fn_info: &mut Vec<FunctionInfo>) {
+    fn get_elf_fn_info(object: &object::File) -> Vec<FunctionInfo> {
+        let mut fn_info = Vec::new();
         for sym in object.symbols() {
             if sym.kind() == object::SymbolKind::Text {
                 let name = Name::from(sym.name().unwrap());
                 let name = name.try_demangle(DemangleOptions::name_only());
                 fn_info.push(FunctionInfo {
                     name: name.to_string(),
-                    offset: sym.address(),
+                    address: sym.address(),
                     size: sym.size(),
                     scope: sym.scope(),
                     symbol_index: sym.index(),
@@ -207,15 +305,17 @@ impl TdbDebugInfo {
                 });
             }
         }
-        fn_info.sort_by(|a, b| a.offset.cmp(&b.offset));
+        fn_info.sort_by(|a, b| a.address.cmp(&b.address));
+        fn_info
     }
 
-    fn get_elf_var_info<'a>(object: &'a object::File, var_info: &mut Vec<VariableInfo>) {
+    fn get_elf_var_info(object: &object::File) -> Vec<VariableInfo> {
+        let mut var_info = Vec::new();
         for sym in object.symbols() {
             if sym.kind() == object::SymbolKind::Data {
                 var_info.push(VariableInfo {
                     name: String::from(sym.name().unwrap()),
-                    offset: sym.address(),
+                    address: sym.address(),
                     size: sym.size(),
                     scope: sym.scope(),
                     symbol_index: sym.index(),
@@ -223,7 +323,29 @@ impl TdbDebugInfo {
                 });
             }
         }
-        var_info.sort_by(|a, b| a.offset.cmp(&b.offset));
+        var_info.sort_by(|a, b| a.address.cmp(&b.address));
+        var_info
+    }
+
+    fn get_misc_symbol_info(object: &object::File) -> Vec<MiscSymbol> {
+        let mut misc_symbol_info = Vec::new();
+        for sym in object.symbols() {
+            match sym.kind() {
+                SymbolKind::Text | SymbolKind::Data | SymbolKind::Null | SymbolKind::Unknown => {
+                    continue
+                }
+                _ => misc_symbol_info.push(MiscSymbol {
+                    address: sym.address(),
+                    name: String::from(sym.name().unwrap()),
+                    size: sym.size(),
+                    scope: sym.scope(),
+                    symbol_index: sym.index(),
+                    addend: None,
+                    kind: sym.kind(),
+                }),
+            }
+        }
+        misc_symbol_info
     }
 
     fn get_mmap_info_vec(
@@ -301,7 +423,19 @@ impl TdbDebugInfo {
         symbol_vec: &mut Vec<impl SymbolTrait>,
     ) -> Option<&mut dyn SymbolTrait> {
         for sym in symbol_vec {
-            if target_symbol_value == sym.offset() {
+            if target_symbol_value == sym.address() {
+                return Some(sym);
+            }
+        }
+        None
+    }
+
+    fn find_target_symbol_from_index(
+        index: SymbolIndex,
+        symbol_vec: &mut Vec<impl SymbolTrait>,
+    ) -> Option<&mut dyn SymbolTrait> {
+        for sym in symbol_vec {
+            if index == sym.symbol_index() {
                 return Some(sym);
             }
         }
@@ -321,8 +455,8 @@ impl TdbDebugInfo {
                     let start = map.start() as u64;
                     let offset = map.offset as u64;
                     let size = map.size() as u64;
-                    if (offset <= sym.offset()) && (sym.offset() < offset + size) {
-                        let diff = sym.offset() - offset;
+                    if (offset <= sym.address()) && (sym.address() < offset + size) {
+                        let diff = sym.address() - offset;
                         return Some(start + diff);
                     } else {
                         continue;
@@ -344,8 +478,8 @@ impl TdbDebugInfo {
                                 let start = map.start() as u64;
                                 let offset = map.offset as u64;
                                 let size = map.size() as u64;
-                                if (offset <= sym.offset()) && (sym.offset() < offset + size) {
-                                    let diff = sym.offset() - offset;
+                                if (offset <= sym.address()) && (sym.address() < offset + size) {
+                                    let diff = sym.address() - offset;
                                     return Some(start + diff);
                                 } else {
                                     continue;
