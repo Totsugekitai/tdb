@@ -13,7 +13,6 @@ pub struct DebuggerInfo {
     pub syscall_stack: SyscallStack,
     pub breakpoint_manager: BreakpointManager,
     pub debug_info: TdbDebugInfo,
-    pub child: Pid,
     pub step_flag: bool,
 }
 
@@ -31,7 +30,6 @@ pub fn debugger_main(child: Pid, filename: &str) {
         syscall_stack,
         breakpoint_manager,
         debug_info,
-        child,
         step_flag: false,
     };
 

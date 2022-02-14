@@ -9,7 +9,7 @@ use nix::{
     sys::wait::{waitpid, WaitPidFlag, WaitStatus},
     unistd::Pid,
 };
-use object::{Object, ObjectSection, ObjectSymbol};
+use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget, SymbolIndex, SymbolScope};
 use proc_maps::MapRange;
 use std::{
     borrow::{self, Cow},
@@ -20,17 +20,94 @@ use symbolic::{
     demangle::{Demangle, DemangleOptions},
 };
 
+pub trait SymbolTrait {
+    fn offset(&self) -> u64;
+    fn name(&self) -> &str;
+    fn size(&self) -> u64;
+    fn scope(&self) -> SymbolScope;
+    fn symbol_index(&self) -> SymbolIndex;
+    fn addend(&self) -> Option<i64>;
+    fn set_addend(&mut self, addend: i64);
+}
+
 #[derive(Debug, Clone)]
 pub struct FunctionInfo {
-    pub name: String,
-    pub name_demangled: Option<String>,
-    pub offset: u64,
+    offset: u64,
+    addend: Option<i64>,
+    name: String,
+    size: u64,
+    scope: SymbolScope,
+    symbol_index: SymbolIndex,
+}
+
+impl SymbolTrait for FunctionInfo {
+    fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    fn scope(&self) -> SymbolScope {
+        self.scope
+    }
+
+    fn size(&self) -> u64 {
+        self.size
+    }
+
+    fn symbol_index(&self) -> SymbolIndex {
+        self.symbol_index
+    }
+
+    fn addend(&self) -> Option<i64> {
+        self.addend
+    }
+
+    fn set_addend(&mut self, addend: i64) {
+        self.addend = Some(addend);
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct VariableInfo {
-    pub name: String,
-    pub offset: u64,
+    offset: u64,
+    addend: Option<i64>,
+    name: String,
+    size: u64,
+    scope: SymbolScope,
+    symbol_index: SymbolIndex,
+}
+
+impl SymbolTrait for VariableInfo {
+    fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    fn scope(&self) -> SymbolScope {
+        self.scope
+    }
+
+    fn size(&self) -> u64 {
+        self.size
+    }
+
+    fn symbol_index(&self) -> SymbolIndex {
+        self.symbol_index
+    }
+
+    fn addend(&self) -> Option<i64> {
+        self.addend
+    }
+
+    fn set_addend(&mut self, addend: i64) {
+        self.addend = Some(addend);
+    }
 }
 
 impl VariableInfo {
@@ -45,22 +122,18 @@ impl VariableInfo {
         } else {
             self.offset
         };
-        println!(
-            "{:x}-{:x}, {:x}",
-            map_offset,
-            map_offset + map_size,
-            var_offset
-        );
         (map_offset <= var_offset) && (var_offset < (map_offset + map_size))
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TdbDebugInfo {
+    pub filename: String,
     pub fn_info_vec: Vec<FunctionInfo>,
     pub var_info_vec: Vec<VariableInfo>,
     pub mmap_info_vec: Vec<MapRange>,
     pub base_addr: u64,
+    pub target_pid: Pid,
 }
 
 impl TdbDebugInfo {
@@ -84,12 +157,27 @@ impl TdbDebugInfo {
             }
         }
 
+        let mut reloc_info_vec = Vec::new();
+        for r in object.dynamic_relocations().unwrap() {
+            if r.1.target() == RelocationTarget::Absolute {
+                let target_symbol_value = r.0;
+                let target_symbol =
+                    Self::find_target_symbol_from_rel_info(target_symbol_value, &mut var_info_vec);
+                if let Some(sym) = target_symbol {
+                    sym.set_addend(r.1.addend());
+                }
+            }
+            reloc_info_vec.push(r);
+        }
+
         (
             Self {
+                filename: filename.to_string(),
                 fn_info_vec,
                 var_info_vec,
                 mmap_info_vec,
                 base_addr,
+                target_pid: pid,
             },
             status,
         )
@@ -97,11 +185,6 @@ impl TdbDebugInfo {
 
     pub fn get_breakpoint_offset(&self, bp_symbol_name: &str) -> Option<u64> {
         for f in &self.fn_info_vec {
-            if let Some(demangled) = &f.name_demangled {
-                if demangled == bp_symbol_name {
-                    return Some(f.offset);
-                }
-            }
             if f.name == bp_symbol_name {
                 return Some(f.offset);
             }
@@ -112,15 +195,19 @@ impl TdbDebugInfo {
     fn get_elf_fn_info<'a>(object: &'a object::File, fn_info: &mut Vec<FunctionInfo>) {
         for sym in object.symbols() {
             if sym.kind() == object::SymbolKind::Text {
-                let raw_name = sym.name().unwrap();
-                let demangled = Name::from(raw_name).demangle(DemangleOptions::name_only());
+                let name = Name::from(sym.name().unwrap());
+                let name = name.try_demangle(DemangleOptions::name_only());
                 fn_info.push(FunctionInfo {
-                    name: raw_name.to_string(),
-                    name_demangled: demangled,
+                    name: name.to_string(),
                     offset: sym.address(),
+                    size: sym.size(),
+                    scope: sym.scope(),
+                    symbol_index: sym.index(),
+                    addend: None,
                 });
             }
         }
+        fn_info.sort_by(|a, b| a.offset.cmp(&b.offset));
     }
 
     fn get_elf_var_info<'a>(object: &'a object::File, var_info: &mut Vec<VariableInfo>) {
@@ -129,9 +216,14 @@ impl TdbDebugInfo {
                 var_info.push(VariableInfo {
                     name: String::from(sym.name().unwrap()),
                     offset: sym.address(),
+                    size: sym.size(),
+                    scope: sym.scope(),
+                    symbol_index: sym.index(),
+                    addend: None,
                 });
             }
         }
+        var_info.sort_by(|a, b| a.offset.cmp(&b.offset));
     }
 
     fn get_mmap_info_vec(
@@ -202,6 +294,84 @@ impl TdbDebugInfo {
                 "rodata map not found",
             )))
         }
+    }
+
+    fn find_target_symbol_from_rel_info(
+        target_symbol_value: u64,
+        symbol_vec: &mut Vec<impl SymbolTrait>,
+    ) -> Option<&mut dyn SymbolTrait> {
+        for sym in symbol_vec {
+            if target_symbol_value == sym.offset() {
+                return Some(sym);
+            }
+        }
+        None
+    }
+
+    pub fn get_actual_symbol_address(&self, sym: &impl SymbolTrait) -> Option<u64> {
+        for map in &self.mmap_info_vec {
+            let filename = map.filename();
+            let filename = match filename {
+                Some(path) => path.file_name().unwrap().to_str().unwrap(),
+                None => "",
+            };
+
+            match sym.scope() {
+                SymbolScope::Compilation | SymbolScope::Linkage => {
+                    let start = map.start() as u64;
+                    let offset = map.offset as u64;
+                    let size = map.size() as u64;
+                    if (offset <= sym.offset()) && (sym.offset() < offset + size) {
+                        let diff = sym.offset() - offset;
+                        return Some(start + diff);
+                    } else {
+                        continue;
+                    };
+                }
+                SymbolScope::Dynamic => {
+                    if self.filename == filename {
+                        let mem_base = self.base_addr;
+                        match sym.addend() {
+                            Some(addend) => {
+                                let actual = if addend >= 0 {
+                                    mem_base + addend as u64
+                                } else {
+                                    mem_base - (addend.abs() as u64)
+                                };
+                                return Some(actual);
+                            }
+                            None => {
+                                let start = map.start() as u64;
+                                let offset = map.offset as u64;
+                                let size = map.size() as u64;
+                                if (offset <= sym.offset()) && (sym.offset() < offset + size) {
+                                    let diff = sym.offset() - offset;
+                                    return Some(start + diff);
+                                } else {
+                                    continue;
+                                };
+                            }
+                        };
+                    } else {
+                        continue;
+                    }
+                }
+                SymbolScope::Unknown => continue,
+            }
+        }
+        None
+    }
+
+    pub fn find_function_in(&self, addr: u64) -> Option<&FunctionInfo> {
+        for f in &self.fn_info_vec {
+            if let Some(start) = self.get_actual_symbol_address(f) {
+                let end = start + f.size;
+                if (start <= addr) && (addr < end) {
+                    return Some(f);
+                }
+            }
+        }
+        None
     }
 
     // fn get_dwarf_fn_info<R: Reader<Offset = usize>>(

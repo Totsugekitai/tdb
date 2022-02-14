@@ -28,6 +28,7 @@ pub enum Command {
     ExamineMemory(u64, u64),
     ExamineMemoryMap,
     List(Vec<String>),
+    Backtrace,
 }
 
 // #[derive(Debug)]
@@ -93,6 +94,7 @@ impl Command {
                     .collect::<Vec<String>>();
                 Ok(List(sub_commands))
             }
+            "backtrace" | "bt" => Ok(Backtrace),
             _ => Err(Box::new(Error::new(
                 ErrorKind::NotFound,
                 "command not found",
@@ -126,20 +128,20 @@ impl Command {
             Continue => {
                 let ptrace_options =
                     ptrace::Options::from_bits(PTRACE_O_TRACEEXEC | PTRACE_O_TRACESYSGOOD).unwrap();
-                ptrace::setoptions(debugger_info.child, ptrace_options)?;
+                ptrace::setoptions(debugger_info.debug_info.target_pid, ptrace_options)?;
 
                 switch(status, debugger_info)
             }
             DumpRegisters => {
-                dump::register(debugger_info.child);
+                dump::register(debugger_info.debug_info.target_pid);
                 Ok(())
             }
             ExamineMemory(addr, len) => {
-                dump::memory(debugger_info.child, addr, len);
+                dump::memory(debugger_info.debug_info.target_pid, addr, len);
                 Ok(())
             }
             ExamineMemoryMap => {
-                dump::memory_map(debugger_info.child);
+                dump::memory_map(debugger_info.debug_info.target_pid);
                 Ok(())
             }
             List(sub_commands) => {
@@ -153,6 +155,10 @@ impl Command {
                         _ => println!("invalid ls sub command"),
                     }
                 }
+                Ok(())
+            }
+            Backtrace => {
+                dump::backtrace(&debugger_info.debug_info);
                 Ok(())
             }
         }
@@ -270,12 +276,12 @@ fn stopped(pid: Pid, signal: Signal, debugger_info: &mut DebuggerInfo) {
 
 fn single_step(debugger_info: &mut DebuggerInfo) -> Result<(), Box<dyn std::error::Error>> {
     debugger_info.step_flag = true;
-    ptrace::step(debugger_info.child, None)?;
+    ptrace::step(debugger_info.debug_info.target_pid, None)?;
     let wait_options =
         WaitPidFlag::from_bits(WaitPidFlag::WCONTINUED.bits() | WaitPidFlag::WUNTRACED.bits());
-    let status = waitpid(debugger_info.child, wait_options).unwrap();
+    let status = waitpid(debugger_info.debug_info.target_pid, wait_options).unwrap();
 
-    let rip = get_regs(debugger_info.child).rip;
+    let rip = get_regs(debugger_info.debug_info.target_pid).rip;
     println!("rip = 0x{:016x}", rip);
 
     switch(status, debugger_info)

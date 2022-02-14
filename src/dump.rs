@@ -1,13 +1,17 @@
 #![allow(unused)]
+use crate::{
+    debug_info::{SymbolTrait, TdbDebugInfo},
+    debugger::DebuggerInfo,
+    syscall::get_regs,
+};
 use nix::{libc::c_void, sys::ptrace, unistd::Pid};
+use object::Endian;
 use proc_maps::get_process_maps;
-use std::path::Path;
+use std::{borrow::Borrow, path::Path};
 use symbolic::{
     common::Name,
     demangle::{demangle, Demangle, DemangleOptions},
 };
-
-use crate::debugger::DebuggerInfo;
 
 pub fn memory_map(pid: Pid) {
     let maps = get_process_maps(pid.as_raw()).unwrap();
@@ -104,19 +108,14 @@ pub fn functions(debugger_info: &DebuggerInfo) {
     let mut f_vec = Vec::new();
     for f in &debugger_info.debug_info.fn_info_vec {
         let exec_map_offset = exec_map.offset as u64;
-        let addr = if f.offset >= exec_map_offset {
-            exec_map.start() as u64 + (f.offset - exec_map_offset)
+        let addr = if f.offset() >= exec_map_offset {
+            exec_map.start() as u64 + (f.offset() - exec_map_offset)
         } else {
-            f.offset
+            f.offset()
         };
-        let name = if let Some(demangled) = &f.name_demangled {
-            demangled
-        } else {
-            &f.name
-        };
-        f_vec.push((addr, name));
+        f_vec.push((addr, f.name()));
     }
-    f_vec.sort_by(|a, b| a.0.cmp(&b.0));
+
     for f in f_vec {
         println!("0x{:016x}: {}", f.0, f.1);
     }
@@ -124,7 +123,6 @@ pub fn functions(debugger_info: &DebuggerInfo) {
 
 pub fn variables(debugger_info: &DebuggerInfo) {
     let base_addr = debugger_info.debug_info.base_addr;
-    let mut vector = Vec::new();
 
     let rodata_maps = debugger_info.debug_info.rodata_maps().unwrap();
     for rodata_map in &rodata_maps {
@@ -132,13 +130,12 @@ pub fn variables(debugger_info: &DebuggerInfo) {
         for v in &debugger_info.debug_info.var_info_vec {
             let rodata_map_offset = rodata_map.offset as u64;
             if v.is_included(rodata_map, base_addr) {
-                let addr = if v.offset > base_diff {
-                    let var_offset = v.offset - base_diff;
+                let addr = if v.offset() > base_diff {
+                    let var_offset = v.offset() - base_diff;
                     base_addr + var_offset
                 } else {
-                    v.offset
+                    v.offset()
                 };
-                vector.push((addr, &v.name));
             }
         }
     }
@@ -149,21 +146,43 @@ pub fn variables(debugger_info: &DebuggerInfo) {
         for v in &debugger_info.debug_info.var_info_vec {
             let data_map_offset = data_map.offset as u64;
             if v.is_included(data_map, base_addr) {
-                let addr = if v.offset > base_diff {
-                    let var_offset = v.offset - base_diff;
+                let addr = if v.offset() > base_diff {
+                    let var_offset = v.offset() - base_diff;
                     base_addr + var_offset
                 } else {
-                    v.offset
+                    v.offset()
                 };
-                vector.push((addr, &v.name));
             }
         }
     }
 
-    vector.sort_by(|a, b| a.0.cmp(&b.0));
-    for v in vector {
-        let name = Name::from(v.1);
-        let demangled = name.try_demangle(DemangleOptions::name_only());
-        println!("0x{:016x}: {}", v.0, demangled);
+    for var in &debugger_info.debug_info.var_info_vec {
+        let name = Name::from(var.name());
+        let name = name.try_demangle(DemangleOptions::name_only());
+        if let Some(addr) = debugger_info.debug_info.get_actual_symbol_address(var) {
+            println!("0x{:016x}: {}", addr, name);
+        } else {
+            println!("0x{:016x}: {}", 0, name);
+        }
     }
+}
+
+pub fn backtrace(debug_info: &TdbDebugInfo) {
+    let regs = get_regs(debug_info.target_pid);
+    let rbp = regs.rbp;
+    let rip = regs.rip;
+    if let Some(f) = debug_info.find_function_in(rip) {
+        println!("0x{:016x} in {}(top)", rip, f.name());
+        backtrace_inner(debug_info, rbp).unwrap();
+    }
+}
+
+fn backtrace_inner(debug_info: &TdbDebugInfo, rbp: u64) -> Result<(), Box<dyn std::error::Error>> {
+    let prev_frame_addr = ptrace::read(debug_info.target_pid, rbp as *mut c_void)? as u64;
+    let return_addr = ptrace::read(debug_info.target_pid, (rbp + 8) as *mut c_void)? as u64;
+    if let Some(f) = debug_info.find_function_in(return_addr) {
+        println!("0x{:016x} in {}", return_addr, f.name());
+        backtrace_inner(debug_info, prev_frame_addr)?;
+    }
+    Ok(())
 }
