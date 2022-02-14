@@ -181,8 +181,15 @@ fn backtrace_inner(debug_info: &TdbDebugInfo, rbp: u64) -> Result<(), Box<dyn st
     let prev_frame_addr = ptrace::read(debug_info.target_pid, rbp as *mut c_void)? as u64;
     let return_addr = ptrace::read(debug_info.target_pid, (rbp + 8) as *mut c_void)? as u64;
     if let Some(f) = debug_info.find_function_in(return_addr) {
-        println!("0x{:016x} in {}", return_addr, f.name());
         backtrace_inner(debug_info, prev_frame_addr)?;
+        println!("0x{:016x} in {}", return_addr, f.name());
+    } else {
+        let regs = get_regs(debug_info.target_pid);
+        let rsp = regs.rsp;
+        let return_addr = ptrace::read(debug_info.target_pid, rsp as *mut c_void)? as u64;
+        if let Some(f) = debug_info.find_function_in(return_addr) {
+            println!("0x{:016x} in {}", return_addr, f.name());
+        }
     }
     Ok(())
 }
