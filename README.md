@@ -11,7 +11,7 @@
 - [x] dump registers
 - [x] dump memory
 - [x] list symbols
-- [x] write
+- [ ] write
     - [x] memory
     - [x] register
     - [ ] local/global variable
