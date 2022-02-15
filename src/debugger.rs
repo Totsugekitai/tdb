@@ -35,9 +35,9 @@ pub enum WatchPoint {
 
 impl WatchPoint {
     fn get_value(&self) -> u64 {
-        match self {
-            &Self::Memory(m) => m.value,
-            &Self::Register(r) => r.value,
+        match *self {
+            Self::Memory(m) => m.value,
+            Self::Register(r) => r.value,
         }
     }
 
@@ -57,12 +57,12 @@ impl WatchPoint {
     }
 
     fn is_changed(&self, pid: Pid) -> bool {
-        match self {
-            &Self::Memory(mem) => {
+        match *self {
+            Self::Memory(mem) => {
                 let read = ptrace::read(pid, mem.addr as *mut c_void).unwrap() as u64;
                 mem.value != read
             }
-            &Self::Register(reg) => {
+            Self::Register(reg) => {
                 let read = reg.reg_type.get_current_value(pid);
                 reg.value != read
             }
@@ -70,9 +70,9 @@ impl WatchPoint {
     }
 
     fn fetch_new_value(&self, pid: Pid) -> u64 {
-        match self {
-            &Self::Memory(mem) => ptrace::read(pid, mem.addr as *mut c_void).unwrap() as u64,
-            &Self::Register(reg) => reg.reg_type.get_current_value(pid),
+        match *self {
+            Self::Memory(mem) => ptrace::read(pid, mem.addr as *mut c_void).unwrap() as u64,
+            Self::Register(reg) => reg.reg_type.get_current_value(pid),
         }
     }
 }

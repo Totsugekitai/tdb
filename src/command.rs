@@ -405,10 +405,10 @@ fn single_step(
         bp.restore_memory(debugger_info.debug_info.target_pid, regs)
             .unwrap();
         debugger_info.cont_flag = false;
-        return Ok((
+        Ok((
             WaitStatus::Stopped(debugger_info.debug_info.target_pid, Signal::SIGTRAP),
             None,
-        ));
+        ))
     }
     // ブレークポイントではなかったとき
     else {
@@ -420,9 +420,9 @@ fn single_step(
             }
             let status = waitpid(debugger_info.debug_info.target_pid, None).unwrap();
             if status == WaitStatus::Stopped(debugger_info.debug_info.target_pid, Signal::SIGTRAP) {
-                return Ok((status, Some(Command::Continue)));
+                Ok((status, Some(Command::Continue)))
             } else {
-                return Ok((status, None));
+                Ok((status, None))
             }
         }
         // ウォッチポイントが仕掛けられているときはstepしてさらにStep Instruction Commandを発行
@@ -430,7 +430,7 @@ fn single_step(
             debugger_info.cont_flag = true;
             ptrace::step(debugger_info.debug_info.target_pid, None).unwrap();
             let status = waitpid(debugger_info.debug_info.target_pid, None).unwrap();
-            return Ok((status, Some(Command::StepInstruction)));
+            Ok((status, Some(Command::StepInstruction)))
         }
     }
 }
