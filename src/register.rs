@@ -1,5 +1,5 @@
 use crate::syscall::get_regs;
-use nix::unistd::Pid;
+use nix::{sys::ptrace, unistd::Pid};
 use std::io;
 
 #[derive(Debug, Clone, Copy)]
@@ -119,4 +119,38 @@ impl RegisterType {
 pub struct Register {
     pub reg_type: RegisterType,
     pub value: u64,
+}
+
+impl Register {
+    pub fn write_value(&self, pid: Pid) {
+        let mut regs = get_regs(pid);
+        match self.reg_type {
+            RegisterType::R15 => regs.r15 = self.value,
+            RegisterType::R14 => regs.r14 = self.value,
+            RegisterType::R13 => regs.r13 = self.value,
+            RegisterType::R12 => regs.r12 = self.value,
+            RegisterType::R11 => regs.r11 = self.value,
+            RegisterType::R10 => regs.r10 = self.value,
+            RegisterType::R9 => regs.r9 = self.value,
+            RegisterType::R8 => regs.r8 = self.value,
+            RegisterType::Rax => regs.rax = self.value,
+            RegisterType::Rbx => regs.rbx = self.value,
+            RegisterType::Rcx => regs.rcx = self.value,
+            RegisterType::Rdx => regs.rdx = self.value,
+            RegisterType::Rdi => regs.rdi = self.value,
+            RegisterType::Rsi => regs.rsi = self.value,
+            RegisterType::Rbp => regs.rbp = self.value,
+            RegisterType::Rsp => regs.rsp = self.value,
+            RegisterType::Rip => regs.rip = self.value,
+            RegisterType::Eflags => regs.eflags = self.value,
+            RegisterType::OrigRax => regs.orig_rax = self.value,
+            RegisterType::Cs => regs.cs = self.value,
+            RegisterType::Ds => regs.ds = self.value,
+            RegisterType::Es => regs.es = self.value,
+            RegisterType::Fs => regs.fs = self.value,
+            RegisterType::Gs => regs.gs = self.value,
+            RegisterType::Ss => regs.ss = self.value,
+        }
+        ptrace::setregs(pid, regs).unwrap();
+    }
 }

@@ -30,10 +30,17 @@ pub enum Command {
     List(Vec<String>),
     Backtrace,
     Watch(WatchCommand),
+    Set(SetCommand),
 }
 
 #[derive(Debug, Clone)]
 pub enum WatchCommand {
+    Memory(mem::Memory),
+    Register(register::Register),
+}
+
+#[derive(Debug, Clone)]
+pub enum SetCommand {
     Memory(mem::Memory),
     Register(register::Register),
 }
@@ -124,6 +131,26 @@ impl Command {
                         "invalid argument",
                     )))
                 }
+            }
+            "set" => {
+                if buf_vec.len() == 3 {
+                    if let Ok(addr) = parse_demical_or_hex(buf_vec[1]) {
+                        if let Ok(value) = parse_demical_or_hex(buf_vec[2]) {
+                            return Ok(Set(SetCommand::Memory(mem::Memory { addr, value })));
+                        }
+                    } else if let Ok(reg_type) = register::RegisterType::parse(buf_vec[1]) {
+                        if let Ok(value) = parse_demical_or_hex(buf_vec[2]) {
+                            return Ok(Set(SetCommand::Register(register::Register {
+                                reg_type,
+                                value,
+                            })));
+                        }
+                    }
+                }
+                Err(Box::new(Error::new(
+                    ErrorKind::InvalidInput,
+                    "invalid argument",
+                )))
             }
             _ => Err(Box::new(Error::new(
                 ErrorKind::NotFound,
@@ -223,6 +250,16 @@ impl Command {
                 }
                 WatchCommand::Register(reg) => {
                     debugger_info.set_watchpoint(WatchPoint::Register(reg));
+                    (status, None)
+                }
+            },
+            Set(set_command) => match set_command {
+                SetCommand::Memory(mem) => {
+                    mem.write_value(debugger_info.debug_info.target_pid);
+                    (status, None)
+                }
+                SetCommand::Register(reg) => {
+                    reg.write_value(debugger_info.debug_info.target_pid);
                     (status, None)
                 }
             },

@@ -1,4 +1,4 @@
-use nix::unistd::Pid;
+use nix::{libc::c_void, sys::ptrace, unistd::Pid};
 use proc_maps::{get_process_maps, MapRange};
 use std::{io, path::Path};
 
@@ -30,4 +30,12 @@ pub fn get_mmap_info(pid: Pid, filename: &str) -> Result<Vec<MapRange>, io::Erro
 pub struct Memory {
     pub addr: u64,
     pub value: u64,
+}
+
+impl Memory {
+    pub fn write_value(&self, pid: Pid) {
+        unsafe {
+            ptrace::write(pid, self.addr as *mut c_void, self.value as *mut c_void).unwrap();
+        }
+    }
 }
