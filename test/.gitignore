@@ -5,3 +5,5 @@ sample.line
 sample.S
 sample.rust
 sample.now
+.gdb_history
+peda-session-sample.txt
