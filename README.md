@@ -23,6 +23,7 @@
     - [x] backtrace
     - [ ] local variables
     - [ ] args
+- [ ] relocation symbol resolution
 
 ## memo(Japanese)
 
