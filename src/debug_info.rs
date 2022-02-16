@@ -205,7 +205,7 @@ impl TdbMapRangeTrait for MapRange {
 impl TdbDebugInfo {
     pub fn init(filename: &str, pid: Pid, syscall_stack: &mut SyscallStack) -> (Self, WaitStatus) {
         let file = fs::File::open(filename).unwrap();
-        let mmap = unsafe { memmap::Mmap::map(&file).unwrap() };
+        let mmap = unsafe { memmap2::Mmap::map(&file).unwrap() };
         let object = object::File::parse(&*mmap).unwrap();
 
         let mut fn_info_vec = Self::get_elf_fn_info(&object);
@@ -546,7 +546,7 @@ impl TdbDebugInfo {
 #[allow(unused)]
 pub fn dump_debug_info(filename: &str) {
     let file = fs::File::open(filename).unwrap();
-    let mmap = unsafe { memmap::Mmap::map(&file).unwrap() };
+    let mmap = unsafe { memmap2::Mmap::map(&file).unwrap() };
     let object = object::File::parse(&*mmap).unwrap();
     let endian = if object.is_little_endian() {
         gimli::RunTimeEndian::Little
