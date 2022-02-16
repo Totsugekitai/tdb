@@ -1,4 +1,5 @@
 use nix::{
+    libc,
     sys::signal::{self, SaFlags, SigAction, SigHandler, SigSet, Signal},
     unistd::Pid,
 };
