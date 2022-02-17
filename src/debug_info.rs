@@ -12,6 +12,7 @@ use nix::{
 use object::{
     Object, ObjectSection, ObjectSymbol, RelocationTarget, SymbolIndex, SymbolKind, SymbolScope,
 };
+use once_cell::sync::OnceCell;
 use proc_maps::MapRange;
 use std::{
     borrow::{self, Cow},
@@ -179,6 +180,34 @@ impl MiscSymbolTrait for MiscSymbol {
     }
 }
 
+static FILE_MMAP: OnceCell<memmap2::Mmap> = OnceCell::new();
+static OBJECT: OnceCell<object::File> = OnceCell::new();
+static DWARF_COW: OnceCell<Dwarf<Cow<[u8]>>> = OnceCell::new();
+static DWARF: OnceCell<Dwarf<EndianSlice<RunTimeEndian>>> = OnceCell::new();
+
+fn init_global_objects(filename: &str) {
+    let file = fs::File::open(filename).unwrap();
+    let map = unsafe { memmap2::Mmap::map(&file).unwrap() };
+    FILE_MMAP.set(map).unwrap();
+    let map = FILE_MMAP.get().unwrap();
+
+    OBJECT.set(object::File::parse(&**map).unwrap()).unwrap();
+    let obj = OBJECT.get().unwrap();
+
+    let endian = if obj.is_little_endian() {
+        gimli::RunTimeEndian::Little
+    } else {
+        gimli::RunTimeEndian::Big
+    };
+
+    let dwarf_cow = get_dwarf_cow(&obj).unwrap();
+    DWARF_COW.set(dwarf_cow).unwrap();
+    let dwarf_cow = DWARF_COW.get().unwrap();
+
+    let dwarf = get_dwarf(&dwarf_cow, endian);
+    DWARF.set(dwarf).unwrap();
+}
+
 #[derive(Debug)]
 pub struct TdbDebugInfo {
     pub filename: String,
@@ -188,6 +217,8 @@ pub struct TdbDebugInfo {
     pub mmap_info_vec: Vec<MapRange>,
     pub base_addr: u64,
     pub target_pid: Pid,
+    object_ref: &'static OnceCell<object::File<'static>>,
+    dwarf_ref: Option<&'static OnceCell<Dwarf<EndianSlice<'static, RunTimeEndian>>>>,
 }
 
 pub trait TdbMapRangeTrait {
@@ -204,13 +235,14 @@ impl TdbMapRangeTrait for MapRange {
 
 impl TdbDebugInfo {
     pub fn init(filename: &str, pid: Pid, syscall_stack: &mut SyscallStack) -> (Self, WaitStatus) {
-        let file = fs::File::open(filename).unwrap();
-        let mmap = unsafe { memmap2::Mmap::map(&file).unwrap() };
-        let object = object::File::parse(&*mmap).unwrap();
+        init_global_objects(filename);
+        let obj_static: &'static OnceCell<object::File> = &OBJECT;
+        let object = obj_static.get().unwrap();
+        let dwarf_static: &'static OnceCell<Dwarf<EndianSlice<RunTimeEndian>>> = &DWARF;
 
-        let mut fn_info_vec = Self::get_elf_fn_info(&object);
-        let mut var_info_vec = Self::get_elf_var_info(&object);
-        let mut misc_symbol_vec = Self::get_misc_symbol_info(&object);
+        let mut fn_info_vec = Self::get_elf_fn_info(object);
+        let mut var_info_vec = Self::get_elf_var_info(object);
+        let mut misc_symbol_vec = Self::get_misc_symbol_info(object);
 
         let (mmap_info_vec, status) = Self::get_mmap_info_vec(pid, filename, syscall_stack);
 
@@ -247,7 +279,9 @@ impl TdbDebugInfo {
                         sym.set_addend(reloc.addend());
                     }
                 }
-                RelocationTarget::Section(_idx) => {}
+                RelocationTarget::Section(_idx) => {
+                    unimplemented!("RelocationTarget::Section detected, unimplemented yet!");
+                }
                 _ => panic!("Invalid RelocationTarget"),
             }
             reloc_info_vec.push((apply_for, reloc));
@@ -262,6 +296,8 @@ impl TdbDebugInfo {
                 mmap_info_vec,
                 base_addr,
                 target_pid: pid,
+                object_ref: obj_static,
+                dwarf_ref: Some(dwarf_static),
             },
             status,
         )
