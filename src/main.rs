@@ -1,12 +1,20 @@
-mod command_line;
+mod args;
+mod breakpoint;
+mod command;
 mod debug_info;
-mod debuggee;
 mod debugger;
+mod dump;
+mod mem;
+mod register;
+mod signal;
 mod syscall;
+mod target;
+mod util;
 
+use std::path::Path;
+
+use args::Args;
 use clap::StructOpt;
-use command_line::Args;
-use debuggee::debuggee_main;
 use debugger::debugger_main;
 use nix::{
     sys::personality::{self, Persona},
@@ -15,11 +23,11 @@ use nix::{
         ForkResult::{Child, Parent},
     },
 };
-
-pub const DEBUGGER_NAME: &str = "tdb";
+use target::target_main;
 
 fn main() {
     let args = Args::parse();
+    args.print_info();
 
     let pers = personality::get().unwrap();
     if let Err(e) = personality::set(pers | Persona::ADDR_NO_RANDOMIZE) {
@@ -33,8 +41,8 @@ fn main() {
     };
     match pid {
         Parent { child } => debugger_main(child, &args.file),
-        Child => debuggee_main(
-            &args.file,
+        Child => target_main(
+            Path::new(&args.file),
             &args.args.iter().map(|s| &**s).collect::<Vec<&str>>(),
         ),
     }

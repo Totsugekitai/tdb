@@ -1,7 +1,9 @@
 #include <stdio.h>
 
+const char *str = "panda";
+
 static int func1(int p1) {
-  printf("hello world %x\n", p1);
+  printf("hello world %x %s\n", p1, str);
   return 0;
 }
 
