@@ -23,8 +23,8 @@ fn init_handler() {
     let mut mask = SigSet::empty();
     mask.add(Signal::SIGINT);
     let handler = SigHandler::Handler(sigint_handler);
-    let sigaction = SigAction::new(handler, SaFlags::empty(), SigSet::empty());
-    let _sigaction = unsafe { signal::sigaction(Signal::SIGINT, &sigaction) };
+    let sigaction = SigAction::new(handler, SaFlags::empty(), mask);
+    let _ = unsafe { signal::sigaction(Signal::SIGINT, &sigaction).unwrap() };
 }
 
 pub fn init(pid: Pid) {

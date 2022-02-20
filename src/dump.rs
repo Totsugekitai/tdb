@@ -27,6 +27,8 @@ pub fn memory_map(pid: Pid) {
                 .to_str()
                 .unwrap()
         );
+        let virt_start = map.start() as u64;
+        crate::debugger::print_physaddr(pid, virt_start);
     }
 }
 

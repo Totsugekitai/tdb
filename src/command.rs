@@ -348,7 +348,13 @@ fn ptrace_syscall(pid: Pid, syscall_stack: &mut SyscallStack) -> WaitStatus {
 
 fn signaled(pid: Pid, signal: Signal, _core_dump: bool) -> WaitStatus {
     println!("signaled: PID: {pid}, Signal: {:?}", signal);
-    if let Err(e) = ptrace::cont(pid, signal) {
+    // if signal == Signal::SIGSEGV {
+    //     let reg = ptrace::getregs(pid);
+    //     let reg = reg.unwrap();
+    //     println!("{:?}", reg);
+    //     loop {}
+    // }
+    if let Err(e) = ptrace::cont(pid, None) {
         println!("ptrace::cont failed: errno = {e}");
     }
     waitpid(pid, None).unwrap()
@@ -387,12 +393,15 @@ fn stopped(
                     panic!("ptrace::cont failed: errno = {e}");
                 }
                 let status = waitpid(debugger_info.debug_info.target_pid, None).unwrap();
-                if status
-                    == WaitStatus::Stopped(debugger_info.debug_info.target_pid, Signal::SIGTRAP)
-                {
-                    return (status, Some(Command::Continue));
-                } else {
-                    return (status, None);
+                match status {
+                    WaitStatus::Stopped(pid, signal) => match signal {
+                        Signal::SIGSEGV => {
+                            handle_sigsegv(pid);
+                        }
+                        Signal::SIGTRAP => return (status, Some(Command::Continue)),
+                        _ => return (status, None),
+                    },
+                    _ => return (status, None),
                 }
             }
             // ウォッチポイントが仕掛けられているときはstepしてさらにStep Instruction Commandを発行
@@ -479,4 +488,9 @@ fn continue_run(
     debugger_info.cont_flag = true;
     let wait_status = switch_by_wait_status(status, debugger_info).unwrap();
     Ok(wait_status)
+}
+
+fn handle_sigsegv(pid: Pid) -> ! {
+    dump::register(pid);
+    loop {}
 }

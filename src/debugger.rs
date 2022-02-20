@@ -1,4 +1,7 @@
-use std::fmt::Debug;
+use std::{
+    fmt::Debug,
+    io::{Read, Seek},
+};
 
 #[allow(unused)]
 use crate::{
@@ -75,6 +78,21 @@ impl WatchPoint {
             Self::Register(reg) => reg.reg_type.get_current_value(pid),
         }
     }
+}
+
+pub fn print_physaddr(pid: Pid, virt: u64) {
+    let mut pagemap = std::fs::File::open(format!("/proc/{}/pagemap", pid.as_raw())).unwrap();
+    let page_size = nix::unistd::sysconf(nix::unistd::SysconfVar::PAGE_SIZE)
+        .unwrap()
+        .unwrap() as u64;
+    let virt_pfn = virt / page_size; // PFN = Page Frame Number
+    let offset = virt_pfn * 8;
+    pagemap.seek(std::io::SeekFrom::Start(offset)).unwrap();
+    let mut page_buf = [0u8; 8];
+    let _ = pagemap.read_exact(&mut page_buf).unwrap();
+    let page = u64::from_le_bytes(page_buf);
+    let page = ((page & 0x7fffffffffffffu64) * page_size) + (virt % page_size);
+    println!("PhysPage: 0x{:x}", page);
 }
 
 pub fn debugger_main(child: Pid, filename: &str) {
