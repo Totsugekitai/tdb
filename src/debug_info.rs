@@ -10,7 +10,8 @@ use nix::{
     unistd::Pid,
 };
 use object::{
-    Object, ObjectSection, ObjectSymbol, RelocationTarget, SymbolIndex, SymbolKind, SymbolScope,
+    Object, ObjectSection, ObjectSymbol, RelocationTarget, Symbol, SymbolIndex, SymbolKind,
+    SymbolScope,
 };
 use once_cell::sync::OnceCell;
 use proc_maps::MapRange;
@@ -314,6 +315,23 @@ impl TdbDebugInfo {
             }
         }
         None
+    }
+
+    pub fn symbol_text(&self) -> Vec<Symbol> {
+        let mut functions = Vec::new();
+        let obj = self.object_ref.get().unwrap();
+
+        for s in obj.symbols() {
+            if s.kind() == object::SymbolKind::Text {
+                functions.push(s);
+            }
+        }
+
+        //if let Some(dwarf) = self.dwarf_ref.get().unwrap() {
+        //    for s in dwarf
+        //}
+
+        functions
     }
 
     fn get_elf_fn_info(object: &object::File) -> Vec<FunctionInfo> {
