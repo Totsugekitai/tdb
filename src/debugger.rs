@@ -160,10 +160,10 @@ pub fn check_watchpoints(
     additional_command: &mut Option<Command>,
 ) {
     for w in &mut debugger_info.watch_list {
-        if w.is_changed(debugger_info.debug_info.target_pid) {
+        if w.is_changed(debugger_info.debug_info.target_pid()) {
             debugger_info.cont_flag = false;
             *additional_command = None;
-            let new = w.fetch_new_value(debugger_info.debug_info.target_pid);
+            let new = w.fetch_new_value(debugger_info.debug_info.target_pid());
             let old = w.update_value(new);
             println!("{:x?}: 0x{:x} -> 0x{:x}", w, old, w.get_value());
         }

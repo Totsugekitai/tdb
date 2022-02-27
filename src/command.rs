@@ -116,11 +116,11 @@ impl Command {
             "watch" | "w" => {
                 if let Ok(addr) = parse_demical_or_hex(buf_vec[1]) {
                     let value =
-                        ptrace::read(debugger_info.debug_info.target_pid, addr as *mut c_void)
+                        ptrace::read(debugger_info.debug_info.target_pid(), addr as *mut c_void)
                             .unwrap() as u64;
                     Ok(Watch(WatchCommand::Memory(mem::Memory { addr, value })))
                 } else if let Ok(reg_type) = register::RegisterType::parse(buf_vec[1]) {
-                    let value = reg_type.get_current_value(debugger_info.debug_info.target_pid);
+                    let value = reg_type.get_current_value(debugger_info.debug_info.target_pid());
                     Ok(Watch(WatchCommand::Register(register::Register {
                         reg_type,
                         value,
@@ -194,7 +194,7 @@ impl Command {
             StepInstruction => {
                 debugger_info.prev_command = Some(command);
                 let status = single_step(debugger_info).unwrap();
-                let regs = get_regs(debugger_info.debug_info.target_pid);
+                let regs = get_regs(debugger_info.debug_info.target_pid());
                 let rip = regs.rip;
                 if !debugger_info.cont_flag {
                     println!("rip = 0x{:016x}", rip);
@@ -207,7 +207,7 @@ impl Command {
                 continue_run(status, debugger_info).unwrap()
             }
             DumpRegisters => {
-                dump::register(debugger_info.debug_info.target_pid);
+                dump::register(debugger_info.debug_info.target_pid());
                 debugger_info.prev_command = Some(command);
                 (status, None)
             }
@@ -217,7 +217,7 @@ impl Command {
                 (status, None)
             }
             ExamineMemoryMap => {
-                dump::memory_map(debugger_info.debug_info.target_pid);
+                dump::memory_map(debugger_info.debug_info.target_pid());
                 debugger_info.prev_command = Some(command);
                 (status, None)
             }
@@ -255,11 +255,11 @@ impl Command {
             },
             Set(set_command) => match set_command {
                 SetCommand::Memory(mem) => {
-                    mem.write_value(debugger_info.debug_info.target_pid);
+                    mem.write_value(debugger_info.debug_info.target_pid());
                     (status, None)
                 }
                 SetCommand::Register(reg) => {
-                    reg.write_value(debugger_info.debug_info.target_pid);
+                    reg.write_value(debugger_info.debug_info.target_pid());
                     (status, None)
                 }
             },
@@ -280,7 +280,7 @@ fn switch_by_wait_status(
             (ptrace_syscall(pid, &mut debugger_info.syscall_stack), None)
         }
         WaitStatus::Signaled(pid, signal, dump) => (signaled(pid, signal, dump), None),
-        WaitStatus::StillAlive => (still_alive(debugger_info.debug_info.target_pid), None),
+        WaitStatus::StillAlive => (still_alive(debugger_info.debug_info.target_pid()), None),
         WaitStatus::Stopped(pid, signal) => stopped(pid, signal, debugger_info),
     };
     Ok(status)
@@ -381,7 +381,7 @@ fn stopped(
         if let Some(bp) = debugger_info.breakpoint_manager.get(addr) {
             bp.restore_memory(pid, regs).unwrap();
             return (
-                WaitStatus::Stopped(debugger_info.debug_info.target_pid, Signal::SIGTRAP),
+                WaitStatus::Stopped(debugger_info.debug_info.target_pid(), Signal::SIGTRAP),
                 None,
             );
         }
@@ -392,7 +392,7 @@ fn stopped(
                 if let Err(e) = ptrace::cont(pid, None) {
                     panic!("ptrace::cont failed: errno = {e}");
                 }
-                let status = waitpid(debugger_info.debug_info.target_pid, None).unwrap();
+                let status = waitpid(debugger_info.debug_info.target_pid(), None).unwrap();
                 match status {
                     WaitStatus::Stopped(pid, signal) => match signal {
                         Signal::SIGSEGV => {
@@ -406,8 +406,8 @@ fn stopped(
             }
             // ウォッチポイントが仕掛けられているときはstepしてさらにStep Instruction Commandを発行
             else {
-                ptrace::step(debugger_info.debug_info.target_pid, None).unwrap();
-                let status = waitpid(debugger_info.debug_info.target_pid, None).unwrap();
+                ptrace::step(debugger_info.debug_info.target_pid(), None).unwrap();
+                let status = waitpid(debugger_info.debug_info.target_pid(), None).unwrap();
                 debugger_info.cont_flag = true;
                 return (status, Some(Command::StepInstruction));
             }
@@ -418,7 +418,7 @@ fn stopped(
         panic!("ptrace::cont failed: errno = {e}");
     }
     (
-        waitpid(debugger_info.debug_info.target_pid, None).unwrap(),
+        waitpid(debugger_info.debug_info.target_pid(), None).unwrap(),
         None,
     )
 }
@@ -426,16 +426,16 @@ fn stopped(
 fn single_step(
     debugger_info: &mut DebuggerInfo,
 ) -> Result<(WaitStatus, Option<Command>), Box<dyn std::error::Error>> {
-    ptrace::step(debugger_info.debug_info.target_pid, None)?;
+    ptrace::step(debugger_info.debug_info.target_pid(), None)?;
     let wait_options =
         WaitPidFlag::from_bits(WaitPidFlag::WCONTINUED.bits() | WaitPidFlag::WUNTRACED.bits());
 
-    let wait_status = waitpid(debugger_info.debug_info.target_pid, wait_options).unwrap();
+    let wait_status = waitpid(debugger_info.debug_info.target_pid(), wait_options).unwrap();
     // println!("{:?}", wait_status);
 
     if !debugger_info.cont_flag {
         return Ok((
-            WaitStatus::Stopped(debugger_info.debug_info.target_pid, Signal::SIGTRAP),
+            WaitStatus::Stopped(debugger_info.debug_info.target_pid(), Signal::SIGTRAP),
             None,
         ));
     }
@@ -443,16 +443,16 @@ fn single_step(
     if let WaitStatus::Exited(_pid, code) = wait_status {
         exit(code);
     }
-    let regs = get_regs(debugger_info.debug_info.target_pid);
+    let regs = get_regs(debugger_info.debug_info.target_pid());
     // もしブレークポイントだったら0xCCより1byte次にいるはず
     let addr = regs.rip - 1;
     // 上のアドレスがブレークポイントだったとき
     if let Some(bp) = debugger_info.breakpoint_manager.get(addr) {
-        bp.restore_memory(debugger_info.debug_info.target_pid, regs)
+        bp.restore_memory(debugger_info.debug_info.target_pid(), regs)
             .unwrap();
         debugger_info.cont_flag = false;
         Ok((
-            WaitStatus::Stopped(debugger_info.debug_info.target_pid, Signal::SIGTRAP),
+            WaitStatus::Stopped(debugger_info.debug_info.target_pid(), Signal::SIGTRAP),
             None,
         ))
     }
@@ -461,11 +461,12 @@ fn single_step(
         // ウォッチポイントが仕掛けられていないときはcontしてもどる
         if debugger_info.watch_list.is_empty() {
             debugger_info.cont_flag = false;
-            if let Err(e) = ptrace::cont(debugger_info.debug_info.target_pid, None) {
+            if let Err(e) = ptrace::cont(debugger_info.debug_info.target_pid(), None) {
                 panic!("ptrace::cont failed: errno = {e}");
             }
-            let status = waitpid(debugger_info.debug_info.target_pid, None).unwrap();
-            if status == WaitStatus::Stopped(debugger_info.debug_info.target_pid, Signal::SIGTRAP) {
+            let status = waitpid(debugger_info.debug_info.target_pid(), None).unwrap();
+            if status == WaitStatus::Stopped(debugger_info.debug_info.target_pid(), Signal::SIGTRAP)
+            {
                 Ok((status, Some(Command::Continue)))
             } else {
                 Ok((status, None))
@@ -474,8 +475,8 @@ fn single_step(
         // ウォッチポイントが仕掛けられているときはstepしてさらにStep Instruction Commandを発行
         else {
             debugger_info.cont_flag = true;
-            ptrace::step(debugger_info.debug_info.target_pid, None).unwrap();
-            let status = waitpid(debugger_info.debug_info.target_pid, None).unwrap();
+            ptrace::step(debugger_info.debug_info.target_pid(), None).unwrap();
+            let status = waitpid(debugger_info.debug_info.target_pid(), None).unwrap();
             Ok((status, Some(Command::StepInstruction)))
         }
     }
@@ -492,5 +493,8 @@ fn continue_run(
 
 fn handle_sigsegv(pid: Pid) -> ! {
     dump::register(pid);
-    loop {} //TODO: implementation
+    // TODO: implementation
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
 }
