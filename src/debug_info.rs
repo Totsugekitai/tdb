@@ -182,8 +182,8 @@ impl MiscSymbolTrait for MiscSymbol {
 
 static FILE_MMAP: OnceCell<memmap2::Mmap> = OnceCell::new();
 static OBJECT: OnceCell<object::File> = OnceCell::new();
-static DWARF_COW: OnceCell<Dwarf<Cow<[u8]>>> = OnceCell::new();
-static DWARF: OnceCell<Dwarf<EndianSlice<RunTimeEndian>>> = OnceCell::new();
+static DWARF_COW: OnceCell<Option<Dwarf<Cow<[u8]>>>> = OnceCell::new();
+static DWARF: OnceCell<Option<Dwarf<EndianSlice<RunTimeEndian>>>> = OnceCell::new();
 
 fn init_global_objects(filename: &str) {
     let file = fs::File::open(filename).unwrap();
@@ -200,12 +200,16 @@ fn init_global_objects(filename: &str) {
         gimli::RunTimeEndian::Big
     };
 
-    let dwarf_cow = get_dwarf_cow(&obj).unwrap();
-    DWARF_COW.set(dwarf_cow).unwrap();
-    let dwarf_cow = DWARF_COW.get().unwrap();
+    if let Ok(dwarf_cow) = get_dwarf_cow(&obj) {
+        DWARF_COW.set(Some(dwarf_cow)).unwrap();
+        let dwarf_cow = DWARF_COW.get().unwrap().as_ref().unwrap();
 
-    let dwarf = get_dwarf(&dwarf_cow, endian);
-    DWARF.set(dwarf).unwrap();
+        let dwarf = get_dwarf(dwarf_cow, endian);
+        DWARF.set(Some(dwarf)).unwrap();
+    } else {
+        DWARF_COW.set(None).unwrap();
+        DWARF.set(None).unwrap();
+    }
 }
 
 #[derive(Debug)]
@@ -218,7 +222,7 @@ pub struct TdbDebugInfo {
     pub base_addr: u64,
     pub target_pid: Pid,
     object_ref: &'static OnceCell<object::File<'static>>,
-    dwarf_ref: Option<&'static OnceCell<Dwarf<EndianSlice<'static, RunTimeEndian>>>>,
+    dwarf_ref: &'static OnceCell<Option<Dwarf<EndianSlice<'static, RunTimeEndian>>>>,
 }
 
 pub trait TdbMapRangeTrait {
@@ -238,7 +242,7 @@ impl TdbDebugInfo {
         init_global_objects(filename);
         let obj_static: &'static OnceCell<object::File> = &OBJECT;
         let object = obj_static.get().unwrap();
-        let dwarf_static: &'static OnceCell<Dwarf<EndianSlice<RunTimeEndian>>> = &DWARF;
+        let dwarf_static: &'static OnceCell<Option<Dwarf<EndianSlice<RunTimeEndian>>>> = &DWARF;
 
         let mut fn_info_vec = Self::get_elf_fn_info(object);
         let mut var_info_vec = Self::get_elf_var_info(object);
@@ -297,7 +301,7 @@ impl TdbDebugInfo {
                 base_addr,
                 target_pid: pid,
                 object_ref: obj_static,
-                dwarf_ref: Some(dwarf_static),
+                dwarf_ref: dwarf_static,
             },
             status,
         )
@@ -702,7 +706,8 @@ fn get_dwarf_cow<'a>(object: &'a object::File) -> Result<Dwarf<Cow<'a, [u8]>>, g
             Some(ref section) => Ok(section
                 .uncompressed_data()
                 .unwrap_or(borrow::Cow::Borrowed(&[][..]))),
-            None => Ok(borrow::Cow::Borrowed(&[][..])),
+            //None => Ok(borrow::Cow::Borrowed(&[][..])),
+            None => Err(gimli::Error::NoEntryAtGivenOffset),
         }
     };
 
