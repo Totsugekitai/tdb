@@ -18,6 +18,7 @@ use std::process::exit;
 pub struct DebuggerInfo {
     pub syscall_stack: SyscallStack,
     pub breakpoint_manager: BreakpointManager,
+    pub vm_watchpoint_manager: crate::call_vmm::VmWatchpointManager,
     pub debug_info: TdbDebugInfo,
     pub prev_command: Option<crate::command::Command>,
     pub watch_list: Vec<WatchPoint>,
@@ -90,9 +91,33 @@ pub fn print_physaddr(pid: Pid, virt: u64) {
     pagemap.seek(std::io::SeekFrom::Start(offset)).unwrap();
     let mut page_buf = [0u8; 8];
     let _ = pagemap.read_exact(&mut page_buf).unwrap();
+
     let page = u64::from_le_bytes(page_buf);
+
     let page = ((page & 0x7fffffffffffffu64) * page_size) + (virt % page_size);
+
     println!("PhysPage: 0x{:x}", page);
+}
+
+pub fn virt2phys(pid: Pid, virt: u64) -> u64 {
+    let mut pagemap = std::fs::File::open(format!("/proc/{}/pagemap", pid.as_raw())).unwrap();
+    let page_size = nix::unistd::sysconf(nix::unistd::SysconfVar::PAGE_SIZE)
+        .unwrap()
+        .unwrap() as u64;
+    let virt_pfn = virt / page_size; // PFN = Page Frame Number
+    let offset = virt_pfn * 8;
+    pagemap.seek(std::io::SeekFrom::Start(offset)).unwrap();
+    let mut page_buf = [0u8; 8];
+    let _ = pagemap.read_exact(&mut page_buf).unwrap();
+
+    let page = u64::from_le_bytes(page_buf);
+
+    if (page & 0x8000_0000_0000_0000u64) == 0 {
+        println!("page not present");
+    }
+
+    let page = ((page & 0x007fffffffffffffu64) * page_size) + (virt % page_size);
+    page
 }
 
 pub fn debugger_main(child: Pid, filename: &str) {
@@ -108,6 +133,7 @@ pub fn debugger_main(child: Pid, filename: &str) {
     let mut debugger_info = DebuggerInfo {
         syscall_stack,
         breakpoint_manager,
+        vm_watchpoint_manager: crate::call_vmm::VmWatchpointManager::new(),
         debug_info,
         watch_list: Vec::new(),
         prev_command: None,

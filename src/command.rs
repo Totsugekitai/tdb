@@ -1,4 +1,5 @@
 use crate::{
+    call_vmm::VmWatchpoint,
     debugger::{DebuggerInfo, WatchPoint},
     dump, mem, register,
     syscall::{get_regs, SyscallInfo, SyscallStack},
@@ -31,6 +32,7 @@ pub enum Command {
     Backtrace,
     Watch(WatchCommand),
     Set(SetCommand),
+    Vmcall(VmWatchpoint),
 }
 
 #[derive(Debug, Clone)]
@@ -44,12 +46,6 @@ pub enum SetCommand {
     Memory(mem::Memory),
     Register(register::Register),
 }
-
-// #[derive(Debug, Clone)]
-// enum ListCommand {
-//     Function,
-//     Variable,
-// }
 
 impl Command {
     pub fn read(debugger_info: &mut DebuggerInfo) -> Result<Command, Box<dyn std::error::Error>> {
@@ -144,6 +140,19 @@ impl Command {
                                 reg_type,
                                 value,
                             })));
+                        }
+                    }
+                }
+                Err(Box::new(Error::new(
+                    ErrorKind::InvalidInput,
+                    "invalid argument",
+                )))
+            }
+            "vmcall" => {
+                if buf_vec.len() == 3 {
+                    if let Ok(addr) = parse_demical_or_hex(buf_vec[1]) {
+                        if let Ok(len) = parse_demical_or_hex(buf_vec[2]) {
+                            return Ok(Vmcall(VmWatchpoint::new(addr, len)));
                         }
                     }
                 }
@@ -263,6 +272,23 @@ impl Command {
                     (status, None)
                 }
             },
+            Vmcall(vm_watchpoint) => {
+                let vmcall_number = crate::call_vmm::VmcallStruct::get_function(
+                    std::ffi::CString::new("tdb").unwrap(),
+                );
+                let mut vmcall_struct = crate::call_vmm::VmcallStruct::default();
+                vmcall_struct.set_vmcall_number(vmcall_number);
+
+                let phys = crate::debugger::virt2phys(
+                    debugger_info.debug_info.target_pid(),
+                    vm_watchpoint.virt(),
+                );
+                let len = vm_watchpoint.len();
+
+                vmcall_struct.vmmcall_tdb(phys, len);
+                debugger_info.vm_watchpoint_manager.set(vm_watchpoint);
+                (status, None)
+            }
         };
         Ok(status_and_additional_command)
     }
@@ -348,12 +374,6 @@ fn ptrace_syscall(pid: Pid, syscall_stack: &mut SyscallStack) -> WaitStatus {
 
 fn signaled(pid: Pid, signal: Signal, _core_dump: bool) -> WaitStatus {
     println!("signaled: PID: {pid}, Signal: {:?}", signal);
-    // if signal == Signal::SIGSEGV {
-    //     let reg = ptrace::getregs(pid);
-    //     let reg = reg.unwrap();
-    //     println!("{:?}", reg);
-    //     loop {}
-    // }
     if let Err(e) = ptrace::cont(pid, None) {
         println!("ptrace::cont failed: errno = {e}");
     }
@@ -387,6 +407,17 @@ fn stopped(
         }
         // ブレークポイントではなかったとき
         else {
+            // vmcallで仕掛けられたウォッチポイントが存在するときはvmcallのウォッチポイントに引っかかったと解釈する
+            if !debugger_info.vm_watchpoint_manager.is_empty() {
+                println!("vmcall watchpoint!");
+                let cc = ptrace::read(debugger_info.debug_info.target_pid(), addr as *mut c_void)
+                    .unwrap();
+                if (cc & 0xff) == 0xcc {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                    }
+                }
+            }
             // ウォッチポイントが仕掛けられていないときはcontしてもどる
             if debugger_info.watch_list.is_empty() {
                 if let Err(e) = ptrace::cont(pid, None) {
@@ -431,7 +462,6 @@ fn single_step(
         WaitPidFlag::from_bits(WaitPidFlag::WCONTINUED.bits() | WaitPidFlag::WUNTRACED.bits());
 
     let wait_status = waitpid(debugger_info.debug_info.target_pid(), wait_options).unwrap();
-    // println!("{:?}", wait_status);
 
     if !debugger_info.cont_flag {
         return Ok((

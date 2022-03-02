@@ -5,7 +5,7 @@ use crate::{
     syscall::get_regs,
 };
 use nix::{libc::c_void, sys::ptrace, unistd::Pid};
-use object::Endian;
+use object::{Endian, SymbolKind};
 use proc_maps::get_process_maps;
 use std::{borrow::Borrow, path::Path};
 use symbolic::{
@@ -119,6 +119,7 @@ pub fn functions(debugger_info: &DebuggerInfo) {
     let base_addr = debugger_info.debug_info.base_addr();
     let exec_map = debugger_info.debug_info.exec_maps().unwrap()[0]; // とりあえずコードセグメントが1つだけのバイナリに対応
     let base_diff = exec_map.start() as u64 - base_addr;
+
     let mut f_vec = Vec::new();
     for f in debugger_info.debug_info.symbols() {
         let exec_map_offset = exec_map.offset as u64;
@@ -127,17 +128,21 @@ pub fn functions(debugger_info: &DebuggerInfo) {
         } else {
             f.address()
         };
-        f_vec.push((addr, f.name()));
+        if f.kind() == SymbolKind::Text {
+            f_vec.push((addr, f.name()));
+        }
     }
 
     for f in f_vec {
-        println!("0x{:016x}: {}", f.0, f.1);
+        let name = Name::from(f.1);
+        let name = name.try_demangle(DemangleOptions::name_only());
+
+        println!("0x{:016x}: {}", f.0, name);
     }
 }
 
 pub fn variables(debugger_info: &DebuggerInfo) {
     let base_addr = debugger_info.debug_info.base_addr();
-
     let rodata_maps = debugger_info.debug_info.rodata_maps().unwrap();
     for rodata_map in &rodata_maps {
         let base_diff = rodata_map.start() as u64 - base_addr;

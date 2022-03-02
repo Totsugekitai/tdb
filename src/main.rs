@@ -1,5 +1,6 @@
 mod args;
 mod breakpoint;
+mod call_vmm;
 mod command;
 mod debug_info;
 mod debugger;
