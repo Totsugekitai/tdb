@@ -116,8 +116,7 @@ pub fn virt2phys(pid: Pid, virt: u64) -> u64 {
         println!("page not present");
     }
 
-    let page = ((page & 0x007fffffffffffffu64) * page_size) + (virt % page_size);
-    page
+    ((page & 0x007fffffffffffffu64) * page_size) + (virt % page_size)
 }
 
 pub fn debugger_main(child: Pid, filename: &str) {

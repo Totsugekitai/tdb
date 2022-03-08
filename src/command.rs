@@ -4,6 +4,7 @@ use crate::{
     dump, mem, register,
     syscall::{get_regs, SyscallInfo, SyscallStack},
     util::parse_demical_or_hex,
+    fini::fini,
 };
 use nix::{
     libc::c_void,
@@ -33,6 +34,7 @@ pub enum Command {
     Watch(WatchCommand),
     Set(SetCommand),
     Vmcall(VmWatchpoint),
+    Exit(i32),
 }
 
 #[derive(Debug, Clone)]
@@ -285,9 +287,13 @@ impl Command {
                 );
                 let len = vm_watchpoint.len();
 
-                vmcall_struct.vmmcall_tdb(phys, len);
+                vmcall_struct.vmcall_register(phys, len);
                 debugger_info.vm_watchpoint_manager.set(vm_watchpoint);
                 (status, None)
+            },
+            Exit(code) => {
+                fini(debugger_info);
+                exit(code);
             }
         };
         Ok(status_and_additional_command)
@@ -321,9 +327,8 @@ fn continued(pid: Pid) -> WaitStatus {
     waitpid(pid, None).unwrap()
 }
 
-fn exited(pid: Pid, exit_code: i32) -> ! {
-    println!("exited: PID: {pid}, exit code: {exit_code}");
-    exit(exit_code);
+fn exited(pid: Pid, exit_code: i32) ->(WaitStatus, Option<Command>) {
+    (WaitStatus::Exited(pid, exit_code), Some(Command::Exit(exit_code)))
 }
 
 fn ptrace_event(pid: Pid, signal: Signal, event: i32) -> WaitStatus {
@@ -471,7 +476,7 @@ fn single_step(
     }
 
     if let WaitStatus::Exited(_pid, code) = wait_status {
-        exit(code);
+        return Ok((wait_status, Some(Command::Exit(code))));
     }
     let regs = get_regs(debugger_info.debug_info.target_pid());
     // もしブレークポイントだったら0xCCより1byte次にいるはず

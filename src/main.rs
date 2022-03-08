@@ -11,6 +11,7 @@ mod signal;
 mod syscall;
 mod target;
 mod util;
+mod fini;
 
 use std::path::Path;
 

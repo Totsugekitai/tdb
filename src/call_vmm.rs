@@ -1,5 +1,7 @@
+use nix::unistd::Pid;
+
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct VmcallArgs {
     rbx: u64,
     rcx: u64,
@@ -8,20 +10,8 @@ struct VmcallArgs {
     rdi: u64,
 }
 
-impl Default for VmcallArgs {
-    fn default() -> Self {
-        Self {
-            rbx: 0,
-            rcx: 0,
-            rdx: 0,
-            rsi: 0,
-            rdi: 0,
-        }
-    }
-}
-
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct VmcallRet {
     rax: u64,
     rbx: u64,
@@ -31,23 +21,8 @@ struct VmcallRet {
     rdi: u64,
 }
 
-impl Default for VmcallRet {
-    fn default() -> Self {
-        Self {
-            rax: 0,
-            rbx: 0,
-            rcx: 0,
-            rdx: 0,
-            rsi: 0,
-            rdi: 0,
-        }
-    }
-}
-
-const GET_VMMCALL_NUMBER: u64 = 0;
-
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct VmcallStruct {
     vmcall_number: u64,
     arg: VmcallArgs,
@@ -59,9 +34,19 @@ extern "C" {
 }
 
 impl VmcallStruct {
-    pub fn vmmcall_tdb(&mut self, phys: u64, len: u64) {
+    pub fn vmcall_register(&mut self, phys: u64, len: u64) {
         self.arg.rbx = phys;
         self.arg.rcx = len;
+        let ptr = self as *mut VmcallStruct;
+        unsafe {
+            vmcall_tdb(ptr);
+        }
+        println!("{:x?}", self);
+    }
+
+    pub fn vmcall_unregister(&mut self, phys: u64) {
+        self.arg.rbx = phys;
+        self.arg.rdi = 1;
         let ptr = self as *mut VmcallStruct;
         unsafe {
             vmcall_tdb(ptr);
@@ -80,24 +65,12 @@ impl VmcallStruct {
 
     pub fn get_function(name: std::ffi::CString) -> u64 {
         let mut vmcall_struct = Self::default();
-        vmcall_struct.vmcall_number = GET_VMMCALL_NUMBER;
         vmcall_struct.arg.rbx = name.as_ptr() as *const u64 as u64;
-        let vmcall_number = vmcall_struct.vmcall();
-        vmcall_number
+        vmcall_struct.vmcall()
     }
 
     pub fn set_vmcall_number(&mut self, n: u64) {
         self.vmcall_number = n;
-    }
-}
-
-impl Default for VmcallStruct {
-    fn default() -> Self {
-        Self {
-            vmcall_number: 0,
-            arg: VmcallArgs::default(),
-            ret: VmcallRet::default(),
-        }
     }
 }
 
@@ -137,14 +110,13 @@ impl VmWatchpointManager {
         self.vm_watchpoint.push(vm_watchpoint);
     }
 
-    // pub fn exists(&self, addr: u64) -> bool {
-    //     for vw in &self.vm_watchpoint {
-    //         if vw.virt == addr {
-    //             return true;
-    //         }
-    //     }
-    //     false
-    // }
+    pub fn delete_all(&self, pid: Pid) {
+        for vw in &self.vm_watchpoint {
+            let mut vmcall_struct = crate::call_vmm::VmcallStruct::default();
+            let phys = crate::debugger::virt2phys(pid, vw.virt());
+            vmcall_struct.vmcall_unregister(phys);
+        }
+    }
 
     pub fn is_empty(&self) -> bool {
         self.vm_watchpoint.is_empty()
