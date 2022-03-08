@@ -5,13 +5,13 @@ mod command;
 mod debug_info;
 mod debugger;
 mod dump;
+mod fini;
 mod mem;
 mod register;
 mod signal;
 mod syscall;
 mod target;
 mod util;
-mod fini;
 
 use std::path::Path;
 

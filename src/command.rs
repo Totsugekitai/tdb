@@ -1,10 +1,11 @@
 use crate::{
     call_vmm::VmWatchpoint,
     debugger::{DebuggerInfo, WatchPoint},
-    dump, mem, register,
+    dump,
+    fini::fini,
+    mem, register,
     syscall::{get_regs, SyscallInfo, SyscallStack},
     util::parse_demical_or_hex,
-    fini::fini,
 };
 use nix::{
     libc::c_void,
@@ -290,7 +291,7 @@ impl Command {
                 vmcall_struct.vmcall_register(phys, len);
                 debugger_info.vm_watchpoint_manager.set(vm_watchpoint);
                 (status, None)
-            },
+            }
             Exit(code) => {
                 fini(debugger_info);
                 exit(code);
@@ -327,8 +328,11 @@ fn continued(pid: Pid) -> WaitStatus {
     waitpid(pid, None).unwrap()
 }
 
-fn exited(pid: Pid, exit_code: i32) ->(WaitStatus, Option<Command>) {
-    (WaitStatus::Exited(pid, exit_code), Some(Command::Exit(exit_code)))
+fn exited(pid: Pid, exit_code: i32) -> (WaitStatus, Option<Command>) {
+    (
+        WaitStatus::Exited(pid, exit_code),
+        Some(Command::Exit(exit_code)),
+    )
 }
 
 fn ptrace_event(pid: Pid, signal: Signal, event: i32) -> WaitStatus {
