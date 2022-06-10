@@ -25,5 +25,5 @@ syscalls = "0.6.1"
 #crossterm = "0.22"
 
 [build-dependencies]
-bindgen = "0.59.2"
+bindgen = "0.60.1"
 cc = "1.0.73"
