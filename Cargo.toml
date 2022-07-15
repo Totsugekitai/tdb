@@ -18,7 +18,7 @@ proc-maps = "0.2.1"
 symbolic = { version = "8.8.0", default-features = false, features = [
     "demangle",
 ] }
-syscalls = "0.6.3"
+syscalls = "0.6.5"
 
 # TUI用
 #tui = "0.17"
