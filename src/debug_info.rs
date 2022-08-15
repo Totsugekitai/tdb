@@ -369,7 +369,7 @@ impl TdbDebugInfo {
                                 let actual = if addend >= 0 {
                                     mem_base + addend as u64
                                 } else {
-                                    mem_base - (addend.abs() as u64)
+                                    mem_base - (addend.unsigned_abs() as u64)
                                 };
                                 return Some(actual);
                             }
@@ -414,7 +414,7 @@ fn get_dwarf<'a>(
 ) -> Dwarf<EndianSlice<'a, RunTimeEndian>> {
     let borrow_section: &dyn for<'bs> Fn(
         &'bs borrow::Cow<[u8]>,
-    ) -> EndianSlice<'bs, RunTimeEndian> = &|section| EndianSlice::new(&*section, endian);
+    ) -> EndianSlice<'bs, RunTimeEndian> = &|section| EndianSlice::new(section, endian);
 
     dwarf_cow.borrow(&borrow_section)
 }

@@ -78,7 +78,7 @@ impl BreakpointManager {
             write += (read_vec[i as usize] as u64) << (i * 8);
         }
 
-        let _ = unsafe { ptrace::write(self.pid, addr as *mut c_void, write as *mut c_void)? };
+        unsafe { ptrace::write(self.pid, addr as *mut c_void, write as *mut c_void)? };
 
         self.breakpoints.push(Breakpoint::new(addr, head));
 

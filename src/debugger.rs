@@ -90,7 +90,7 @@ pub fn print_physaddr(pid: Pid, virt: u64) {
     let offset = virt_pfn * 8;
     pagemap.seek(std::io::SeekFrom::Start(offset)).unwrap();
     let mut page_buf = [0u8; 8];
-    let _ = pagemap.read_exact(&mut page_buf).unwrap();
+    pagemap.read_exact(&mut page_buf).unwrap();
 
     let page = u64::from_le_bytes(page_buf);
 
@@ -108,7 +108,7 @@ pub fn virt2phys(pid: Pid, virt: u64) -> u64 {
     let offset = virt_pfn * 8;
     pagemap.seek(std::io::SeekFrom::Start(offset)).unwrap();
     let mut page_buf = [0u8; 8];
-    let _ = pagemap.read_exact(&mut page_buf).unwrap();
+    pagemap.read_exact(&mut page_buf).unwrap();
 
     let page = u64::from_le_bytes(page_buf);
 
